@@ -162,7 +162,15 @@ async def test_glob_confined_e2e(ws, admin):
     # not the absence of the path string.
     rel = os.path.relpath(secret, os.path.realpath(ws))
     _, r = await execute_tool_block(_block("glob", json.dumps({"pattern": rel})), owner="a", workspace=ws)
-    assert r["exit_code"] == 0 and "No files" in r["output"] and secret not in r["output"]
+    # macOS spells the same temporary tree as both /tmp and /private/tmp. The
+    # response may echo the caller-supplied relative pattern, but it must not
+    # disclose the canonical host path as a discovered match.
+    canonical_secret = os.path.realpath(secret)
+    assert (
+        r["exit_code"] == 0
+        and "No files" in r["output"]
+        and canonical_secret not in r["output"]
+    )
     _, r = await execute_tool_block(_block("glob", json.dumps({"pattern": secret})), owner="a", workspace=ws)
     assert r["exit_code"] == 0 and "No files" in r["output"]
 

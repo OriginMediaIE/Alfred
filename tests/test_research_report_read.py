@@ -20,8 +20,9 @@ import pytest
 
 from src.tool_implementations import do_manage_research
 from src.agent_loop import TOOL_SECTIONS
+from src.constants import DEEP_RESEARCH_DIR
 
-_DATA_DIR = Path("data/deep_research")
+_DATA_DIR = Path(DEEP_RESEARCH_DIR)
 
 
 @pytest.fixture
