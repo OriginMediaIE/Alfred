@@ -173,7 +173,7 @@ async def test_tail_serve_output_rejects_invalid_remote_host_before_shell(monkey
 
 
 @pytest.mark.asyncio
-async def test_tail_serve_output_rejects_invalid_state_host_before_shell(monkeypatch):
+async def test_tail_serve_output_does_not_treat_cookbook_state_as_authority(monkeypatch):
     posts = _install_httpx_client(
         monkeypatch,
         state={
@@ -192,7 +192,7 @@ async def test_tail_serve_output_rejects_invalid_state_host_before_shell(monkeyp
     )
 
     assert result["exit_code"] == 1
-    assert "Invalid remote_host" in result["error"]
+    assert "launched by this agent request" in result["error"]
     assert posts == []
 
 

@@ -496,7 +496,7 @@ FUNCTION_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "update_plan",
-            "description": "Write back to the ACTIVE PLAN: mark steps done or revise them. Use this while executing an approved plan — after you finish a step, call update_plan with the full checklist and that step marked `- [x]`; when the user asks to change the plan, call it with the revised checklist. The user's docked plan window updates live. Pass the COMPLETE checklist every time (not a diff). No effect if there is no active plan.",
+            "description": "Write back to the ACTIVE PLAN: mark steps done or revise them. Use this while executing an approved plan — after you finish a step, call update_plan with the full checklist and that step marked `- [x]`; when the user asks to change the plan, call it with the revised checklist. The browser's bound plan state updates live. Pass the COMPLETE checklist every time (not a diff). The tool is unavailable and fails closed if no active plan is bound.",
             "parameters": {
                 "type": "object",
                 "properties": {

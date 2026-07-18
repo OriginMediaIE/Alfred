@@ -1,9 +1,8 @@
 """Tests for bg_jobs.kill and the manage_bg_jobs agent tool.
 
-Process-free: the store/dir are redirected to tmp, _pid_alive is forced True so
-seeded "running" jobs stay running through refresh(), and _kill is stubbed so no
-real signal is sent. Jobs are scoped to a chat (session_id), which is the main
-invariant under test.
+Process-free: the store/dir are redirected to tmp and _kill is stubbed so no
+real signal is sent. Jobs are scoped to a chat (session_id). List/output are
+strict observations; only the monitor or an explicit kill may reconcile state.
 """
 import asyncio
 import json
@@ -107,6 +106,51 @@ def test_output_cross_session_denied(store):
     _seed(session_id="sess-a", job_id="job0001", output="secret")
     out = _run({"action": "output", "job_id": "job0001"}, session_id="sess-b")
     assert "error" in out and "secret" not in out.get("error", "")
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"action": "list"},
+        {"action": "output", "job_id": "own-job"},
+    ],
+)
+def test_list_and_output_do_not_reconcile_kill_or_prune_other_sessions(
+    store,
+    monkeypatch,
+    args,
+):
+    _seed(session_id="sess-a", job_id="own-job", output="still running")
+    _seed(session_id="sess-b", job_id="other-job", status="done")
+    jobs = bg_jobs._load()
+    jobs["own-job"]["started_at"] = time.time() - 7200
+    jobs["own-job"]["max_runtime_s"] = 1
+    jobs["other-job"]["followed_up"] = True
+    jobs["other-job"]["ended_at"] = time.time() - 7200
+    bg_jobs._save(jobs)
+    other_artifact = store["dir"] / "other-job.log"
+    other_artifact.write_text("other session output", encoding="utf-8")
+    before = bg_jobs._STORE.read_bytes()
+
+    def _unexpected_save(_jobs):
+        raise AssertionError("list/output must not persist background-job state")
+
+    monkeypatch.setattr(bg_jobs, "_save", _unexpected_save)
+
+    out = _run(args, session_id="sess-a")
+
+    assert out["exit_code"] == 0
+    assert store["killed"] == []
+    assert bg_jobs._STORE.read_bytes() == before
+    assert other_artifact.exists()
+
+
+def test_scoped_kill_denies_other_session_before_signalling(store):
+    _seed(session_id="sess-a", job_id="job0001", pid=999)
+
+    assert bg_jobs.kill("job0001", session_id="sess-b") is None
+    assert store["killed"] == []
+    assert bg_jobs._load()["job0001"]["status"] == "running"
 
 
 def test_kill_via_tool(store):

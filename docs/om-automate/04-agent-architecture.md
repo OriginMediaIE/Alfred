@@ -111,13 +111,13 @@ SAFE-002 checkpoints A and B repaired those confirmed identity/import defects an
 - Pure, handler-free schema data/conversion lives in `src/tool_schema_catalog.py`; `src/tool_schemas.py` is a thin compatibility facade.
 - Plan mode allows exactly **23** frozen compatibility names and blocks the exact **54-name** complement. `edit_file`, `vault_search`, `vault_get`, and `vault_unlock` are pinned in that deny projection.
 - `known_tool_names()` uses the 77 canonical static identities plus the separately declared dynamic native name `builtin_browser`.
-- `tail_serve_output` is reachable and now has an interim non-admin gate.
+- `tail_serve_output` is reachable, has an interim non-admin gate, and now consumes a one-shot process-local capability only after the same owner/internal request launches the exact serve task and observes it failing through `list_served_models`.
 
 This is **registry metadata and projection work only**. The runtime dispatcher does not use registry permission, approval, risk, timeout, retry, idempotency, compensation, audit, or verification fields as enforcement. Sixteen plan-allowed names are still unclassified compatibility debt. Handler binding remains descriptive/lazy, schemas flow into the registry rather than being emitted from it, and prompt/index/UI/dispatcher/MCP views remain partly independent.
 
-`tail_serve_output` also remains incomplete: an administrator can request any syntactically valid session ID, without proof that the session belongs to that caller or that it is the new failed task produced by the documented `serve_model` → `list_served_models` sequence.
+The confirmed cross-owner/fresh-sequence `tail_serve_output` defect is now closed at the process boundary: the application creates an unforgeable per-stream request ID, the launch records the authoritative session/host, a same-owner/request list must observe `error`, `crashed`, or `failed`, and one matching tail read consumes the grant before shell/HTTP work. The ledger deliberately fails closed on restart. It is not durable action ownership, approval, or audit state and must be replaced in SAFE-005.
 
-**Required change:** Make registry lookup and operation-level policy the only route to execution; generate remaining provider/search/UI/audit projections; add owner and launch-sequence checks for cookbook diagnostics; shrink legacy debt without granting new exposure.
+**Required change:** Make registry lookup and operation-level policy the only route to execution; generate remaining provider/search/UI/audit projections; persist cookbook launch/status/read attempts as durable owner-scoped actions; shrink legacy debt without granting new exposure.
 
 ### 4. Approval is not an agent-wide primitive
 
@@ -147,17 +147,17 @@ The verifier at `src/agent_loop.py:2408+` applies only to a small hard-coded set
 - Checkpoint-B bash/Python metadata: one hour, but the executor does not consume it (`src/tool_registry.py`)
 - Route defaults: zero means unlimited tool calls, with up to 200 rounds (`routes/chat_routes.py:1393-1403`)
 
-Timeout results add another presentation split: the subprocess returns `error`, `stdout`, `stderr`, and exit code 124, but `format_tool_result()` chooses the `stdout` branch and omits `error`. The browser's separate output path has an error fallback; the LLM-facing formatted result may contain only the exit code.
+The execution-helper remediation now preserves a timeout `error` once alongside stdout/stderr and exit code 124 in the LLM-facing formatter. The worker deadline itself is still the independent one-hour default, so the primary policy drift remains.
 
 **Required change:** Timeouts, retries and budgets must be registry/policy values enforced by one executor and surfaced consistently to the model, UI, and audit record. Timeout tests must assert the reason survives formatting as well as process-tree termination.
 
 ### 8. Compatibility helpers still cross or misstate boundaries
 
-- `update_plan` returns a successful `plan_update` for any non-empty checklist and never checks whether an active plan exists. The corresponding browser branch calls undefined `_setStoredPlan`, so its advertised no-active-plan no-op and live dock refresh are both unproven.
-- `manage_bg_jobs` presents list/output as reads, but both call global `bg_jobs.refresh()` before session filtering. Refresh can kill every session's timed-out processes and prune old records/files, so a read scoped to one chat can mutate other chats' job state.
-- `_MCP_TOOL_MAP` still sends bash, Python, filesystem, and web operations toward built-in MCP server IDs that were removed when those tools became native. Native fallback happens only after a specific “not connected” response, leaving routing semantics dependent on stale server identity and error text.
+- `update_plan` now rejects calls without a bound active plan and emits session/plan/base-version/new-version metadata. The browser applies only the matching next revision and no longer calls an undefined helper. Ownership is still browser-backed/request-local rather than a durable server-side plan/run record.
+- `manage_bg_jobs` list/output now read scoped stored snapshots without reconciliation, persistence, process killing, pruning, or cross-session artifact deletion. Reaping remains in the monitor; later durable job storage still needs locking and verified process identity.
+- Bash, Python, filesystem, and web identities now route directly to native handlers. Explicitly qualified MCP names remain MCP-only, error strings no longer trigger fallback, and `generate_image` is the sole bundled unqualified MCP alias.
 
-**Required change:** Make interaction helpers validate application state, separate background-job observation from global reconciliation, remove stale MCP routes, and add live-path contract tests rather than testing helper-only paths.
+**Required change:** Move the now-tested compatibility seams into durable plan/job/action services and canonical registry-generated bindings rather than treating these local fixes as the final orchestration boundary.
 
 ## SAFE-002 checkpoint B contract snapshot
 
@@ -168,8 +168,9 @@ Timeout results add another presentation split: the subprocess returns `error`, 
 | Plan mode | Exact 23-name compatibility allowlist; exact 54-name canonical deny projection | Replace compatibility choices with operation-level typed policy after classification |
 | Schema/import graph | Pure, handler-free `tool_schema_catalog`; thin `tool_schemas` facade; cold-import cycle remains repaired | Generate schemas from definitions and migrate prompt/index/UI/handlers |
 | Policy identity | Canonical static identities plus dynamic `builtin_browser` | Runtime scope/risk/approval engine and dynamic MCP overlay |
-| Cookbook diagnostics | Reachable `tail_serve_output`; non-admin gate | Caller ownership and fresh-launch sequence enforcement |
-| Verification evidence | 37 earlier focused checks; 28 contract checks; an earlier combined set at 62 passed; latest expanded focused gate **77 passed, 1 warning** | Final-state restricted full suite reached **4,558 passed, 3 skipped, 20 environment-only failures, 8 warnings in 132.80s**. The socket-enabled rerun was blocked by the account usage limit until 2026-07-25, so checkpoint B has no passing full-suite claim. Checkpoint A's older socket-enabled 4,538-pass result applies only to its prior code. |
+| Cookbook diagnostics | Reachable/non-admin-gated `tail_serve_output`; same-owner/request launch → failed-list → one-shot tail capability | Replace process-local grant with durable action/attempt ownership, restart recovery, and audit |
+| Execution helpers | Versioned request-local plan updates; pure/scoped background-job reads; native/MCP dispatch separation; timeout error preservation | Durable plan/job state, registry-generated bindings/results, policy-owned deadlines |
+| Verification evidence | Remediation focused/related gate **275 passed**; current restricted full suite **4,600 passed, 3 skipped, 20 environment-only failures, 8 warnings in 133.07s** | Socket-enabled full rerun, current startup/browser smoke, and container qualification remain blocked by the account usage limit until 2026-07-25; no passing current release gate is claimed |
 
 The 23-name compatibility allowlist is:
 

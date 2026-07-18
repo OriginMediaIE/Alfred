@@ -12,6 +12,7 @@ import json
 import re
 import time
 import logging
+import uuid
 from typing import AsyncGenerator, List, Dict, Optional, Set
 from urllib.parse import urlparse
 
@@ -22,6 +23,7 @@ from src.llm_core import (
 )
 from src.model_context import estimate_tokens
 from src.settings import get_setting
+from src.active_plan import ActivePlanState, bind_active_plan
 from src.prompt_security import untrusted_context_message
 from src.tool_security import blocked_tools_for_owner, plan_mode_disabled_tools
 from src.tool_policy import GUIDE_ONLY_DIRECTIVE, WEB_TOOL_NAMES, ToolPolicy
@@ -528,7 +530,7 @@ If the user asks for a reminder/alarm before the event, pass `reminder_minutes` 
     "pipeline": "- ```pipeline``` — Run a multi-step AI pipeline. Args (JSON) with ordered steps, each specifying a model and prompt. Use for complex workflows.",
     "ui_control": "- ```ui_control``` — Control the UI: toggle tools on/off, OPEN PANELS, open email reply drafts, switch models, change themes. Commands: `toggle <name> on/off` (names: bash/shell, web/search, research, incognito, document_editor/documents), `open_panel <name>` (panels: documents, gallery, email, sessions, notes, memories/brain, skills, settings, cookbook), `open_email_reply <uid> <folder> <reply|reply-all|ai-reply> <body text>` (opens an email compose document pre-filled with body, DOES NOT send; use this for normal “write/draft a reply saying X” requests), `set_mode agent/chat`, `switch_model <name>`, `set_theme <preset>`, `create_theme <name> <bg> <fg> <panel> <border> <accent>` (optional key=val for advanced colors AND background effects: bgPattern=<none|dots|synapse|rain|constellations|perlin-flow|petals|sparkles|embers>, bgEffectColor=#RRGGBB, bgEffectIntensity=<num>, bgEffectSize=<num>, frosted=true|false). \"open documents\" / \"open library\" / \"show gallery\" / \"open inbox\" / \"open notes\" / \"open cookbook\" all map to `open_panel <name>`. Built-in theme presets: dark, light, midnight, paper, cyberpunk, retrowave, forest, ocean, ume, copper, terminal, organs, lavender, gpt, claude, cute. For any other vibe/name, use create_theme.",
     "ask_user": "- ```ask_user``` — Ask the user a multiple-choice question when the task is genuinely ambiguous and the answer changes what you do next (pick an approach, confirm an assumption, choose a target). Args (JSON): {\"question\": \"...\", \"options\": [{\"label\": \"...\", \"description\": \"...\"?}, ...], \"multi\": false?}. 2-6 options. The user gets clickable buttons; calling this ENDS your turn and their choice comes back as your next message. Prefer sensible defaults — only ask when you truly can't proceed well without their input.",
-    "update_plan": "- ```update_plan``` — While executing an approved plan, write the plan back: tick steps done or revise them. Args (JSON): {\"plan\": \"- [x] done step\\n- [ ] next step\"}. Always pass the COMPLETE checklist, not a diff. Call it after finishing each step (mark it `- [x]`) and whenever the user asks to change the plan. The user's docked plan window updates live. Does nothing if there's no active plan.",
+    "update_plan": "- ```update_plan``` — While executing an approved plan, write the plan back: tick steps done or revise them. Args (JSON): {\"plan\": \"- [x] done step\\n- [ ] next step\"}. Always pass the COMPLETE checklist, not a diff. Call it after finishing each step (mark it `- [x]`) and whenever the user asks to change the plan. The browser's bound plan state updates live. The tool is unavailable and fails closed when no active plan is bound.",
     "list_served_models": "- ```list_served_models``` — Show what the Cookbook (LLM-serving subsystem) is currently running. NO args. Use this for ANY 'what's running' / 'what's serving' / 'show my cookbook' / 'is anything up' query. DO NOT shell out (`ps aux`, `docker ps`, etc.) — this tool is the source of truth. Failed serve tasks include recent logs plus diagnosis/retry suggestions; use those suggestions to call `serve_model` again with an adjusted command when appropriate.",
     "stop_served_model": "- ```stop_served_model``` — Stop a running model server. Args (JSON): {\"session_id\": \"<from list_served_models>\"}. Use for 'kill my cookbook' / 'stop the model' / 'shut down vLLM'.",
     "tail_serve_output": "- ```tail_serve_output``` — Read the actual tmux stderr/traceback of a CURRENTLY failing cookbook task. Args (JSON): {\"session_id\": \"<from list_served_models>\", \"tail\": 150?}. **Use ONLY after** you just launched something via `serve_model` AND `list_served_models` reports YOUR new task as `crashed`/`error`. DO NOT use it on old stopped/completed download tasks (they're historical noise — won't predict whether a new launch succeeds). DO NOT call it before launching a fresh attempt. When you do call it, bump `tail` to 400+ only if the visible error references 'see root cause above'.",
@@ -2565,6 +2567,8 @@ async def stream_agent_loop(
     uploaded_files: Optional[List[Dict]] = None,
     workload: str = "foreground",
     _is_teacher_run: bool = False,
+    approved_plan_id: Optional[str] = None,
+    approved_plan_version: int = 0,
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop generator.
 
@@ -2578,8 +2582,30 @@ async def stream_agent_loop(
     """
 
     mcp_mgr = get_mcp_manager()
+    # Internal identity for this streamed agent request.  It is deliberately
+    # generated here rather than accepted from model/tool arguments so
+    # request-scoped capabilities cannot be replayed by prompt content.
+    _tool_request_id = uuid.uuid4().hex
     prep_timings: Dict[str, float] = {}
     disabled_tools = set(disabled_tools or [])
+    approved_plan = (approved_plan or "").strip()[:8192]
+    _active_plan_state = None
+    if approved_plan and not plan_mode:
+        try:
+            _plan_version = max(0, int(approved_plan_version or 0))
+        except (TypeError, ValueError):
+            _plan_version = 0
+        _plan_id = str(approved_plan_id or f"legacy:{session_id or 'request'}").strip()[:128]
+        _active_plan_state = ActivePlanState(
+            session_id=str(session_id or ""),
+            plan_id=_plan_id or f"legacy:{session_id or 'request'}",
+            text=approved_plan,
+            version=_plan_version,
+        )
+    else:
+        # Do not advertise a tool that can only return a failure, and enforce
+        # the same contract if a model emits the fenced block anyway.
+        disabled_tools.add("update_plan")
     if tool_policy:
         disabled_tools.update(tool_policy.all_disabled_names())
         if tool_policy.disable_mcp:
@@ -3113,6 +3139,7 @@ async def stream_agent_loop(
             _ody_memory_identity_turn,
             len(messages),
         )
+    _plan_note = ""
     if plan_mode and not guide_only:
         # Steer the model to investigate-then-propose. Hard tool gating handles
         # the complete canonical static deny projection, including bash and
@@ -3997,15 +4024,28 @@ async def stream_agent_loop(
                 # this generator; only the explicit detached-run Stop path (or
                 # another real outer failure) reaches the finally below.
                 async def _run_tool(progress_cb):
-                    return await execute_tool_block(
-                        block,
-                        session_id=session_id,
-                        disabled_tools=disabled_tools,
-                        tool_policy=tool_policy,
-                        owner=owner,
-                        progress_cb=progress_cb,
-                        workspace=workspace,
-                    )
+                    if _active_plan_state is None:
+                        return await execute_tool_block(
+                            block,
+                            session_id=session_id,
+                            disabled_tools=disabled_tools,
+                            tool_policy=tool_policy,
+                            owner=owner,
+                            request_id=_tool_request_id,
+                            progress_cb=progress_cb,
+                            workspace=workspace,
+                        )
+                    with bind_active_plan(_active_plan_state):
+                        return await execute_tool_block(
+                            block,
+                            session_id=session_id,
+                            disabled_tools=disabled_tools,
+                            tool_policy=tool_policy,
+                            owner=owner,
+                            request_id=_tool_request_id,
+                            progress_cb=progress_cb,
+                            workspace=workspace,
+                        )
 
                 _tool_run = CancellableToolRun(_run_tool)
                 try:
@@ -4127,6 +4167,20 @@ async def stream_agent_loop(
             # Push it to the frontend so the stored plan + docked window update
             # live. Does NOT end the turn — the agent keeps working.
             if "plan_update" in result:
+                # Keep subsequent rounds pinned to the revision the tool just
+                # produced, not the checklist that arrived at request start.
+                if _active_plan_state is not None:
+                    _next_plan_note = build_active_plan_note(_active_plan_state.text)
+                    if (
+                        _plan_note
+                        and messages
+                        and messages[0].get("role") == "system"
+                        and (messages[0].get("content") or "").startswith(_plan_note)
+                    ):
+                        messages[0]["content"] = (
+                            _next_plan_note + (messages[0].get("content") or "")[len(_plan_note):]
+                        )
+                    _plan_note = _next_plan_note
                 yield (
                     f'data: {json.dumps({"type": "plan_update", "data": result["plan_update"]})}\n\n'
                 )

@@ -582,8 +582,33 @@ def setup_chat_routes(
         # the plan. Ignored while still proposing (plan_mode on). Capped so a
         # huge plan can't blow the prompt.
         approved_plan = ""
+        approved_plan_id = ""
+        approved_plan_version = 0
         if not plan_mode:
-            approved_plan = (form_data.get("approved_plan") or "").strip()[:8192]
+            _approved_plan_raw = form_data.get("approved_plan")
+            _approved_plan_id_raw = form_data.get("approved_plan_id")
+            _approved_plan_version_raw = form_data.get("approved_plan_version")
+            if isinstance(body, dict):
+                if _approved_plan_raw is None:
+                    _approved_plan_raw = body.get("approved_plan")
+                if _approved_plan_id_raw is None:
+                    _approved_plan_id_raw = body.get("approved_plan_id")
+                if _approved_plan_version_raw is None:
+                    _approved_plan_version_raw = body.get("approved_plan_version")
+            approved_plan = (
+                _approved_plan_raw.strip()[:8192]
+                if isinstance(_approved_plan_raw, str)
+                else ""
+            )
+            approved_plan_id = (
+                _approved_plan_id_raw.strip()[:128]
+                if isinstance(_approved_plan_id_raw, str)
+                else ""
+            )
+            try:
+                approved_plan_version = max(0, int(_approved_plan_version_raw or 0))
+            except (TypeError, ValueError):
+                approved_plan_version = 0
         # Did the USER explicitly pick agent mode? (vs. us auto-escalating
         # below). Skill extraction should only learn from real agent sessions,
         # not chats we quietly promoted for a notes/calendar intent.
@@ -1426,6 +1451,8 @@ def setup_chat_routes(
                         fallbacks=_fallback_candidates,
                         plan_mode=plan_mode,
                         approved_plan=approved_plan or None,
+                        approved_plan_id=approved_plan_id or None,
+                        approved_plan_version=approved_plan_version,
                         workspace=workspace or None,
                         forced_tools=_forced_tools,
                         uploaded_files=ctx.uploaded_files,

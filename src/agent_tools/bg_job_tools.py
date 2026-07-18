@@ -75,24 +75,29 @@ class ManageBgJobsTool:
             lines = "\n".join(_row(r) for r in jobs)
             return {"output": f"{len(jobs)} background job(s):\n{lines}", "exit_code": 0}
 
-        if action in _OUTPUT_ACTIONS or action in _KILL_ACTIONS:
+        if action in _OUTPUT_ACTIONS:
             if not job_id:
                 return {"error": f"manage_bg_jobs: action '{action}' requires a job_id (see action='list').", "exit_code": 1}
-            rec = bg_jobs.get(job_id)
-            # Scope: only the chat that launched a job may see or control it.
-            if rec is None or rec.get("session_id") != session_id:
+            rec = bg_jobs.get_for_session(job_id, session_id)
+            if rec is None:
                 return {"error": f"manage_bg_jobs: no background job '{job_id}' in this chat.", "exit_code": 1}
-
-            if action in _KILL_ACTIONS:
-                if rec.get("status") != "running":
-                    return {"output": f"Job `{job_id}` already {_status_label(rec)}; nothing to kill.", "exit_code": 0}
-                killed = bg_jobs.kill(job_id)
-                return {"output": f"Killed background job `{job_id}` ({(killed or {}).get('command', '').splitlines()[0][:80]}).", "exit_code": 0}
 
             out = rec.get("output") or "(no output yet)"
             return {
                 "output": f"Job `{job_id}` [{_status_label(rec)}, {_age(rec)}]\nCommand: {rec.get('command')}\n\nOutput:\n{out}",
                 "exit_code": 0,
             }
+
+        if action in _KILL_ACTIONS:
+            if not job_id:
+                return {"error": f"manage_bg_jobs: action '{action}' requires a job_id (see action='list').", "exit_code": 1}
+            # Scope is checked inside kill() immediately before mutation; list
+            # and output remain pure observations and never call global refresh().
+            killed = bg_jobs.kill(job_id, session_id=session_id)
+            if killed is None:
+                return {"error": f"manage_bg_jobs: no background job '{job_id}' in this chat.", "exit_code": 1}
+            if not killed.get("killed"):
+                return {"output": f"Job `{job_id}` already {_status_label(killed)}; nothing to kill.", "exit_code": 0}
+            return {"output": f"Killed background job `{job_id}` ({killed.get('command', '').splitlines()[0][:80]}).", "exit_code": 0}
 
         return {"error": f"manage_bg_jobs: unknown action '{action}'. Use list, output, or kill.", "exit_code": 1}

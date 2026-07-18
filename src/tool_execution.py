@@ -328,14 +328,21 @@ def _owner_is_admin(owner: Optional[str]) -> bool:
 # MCP-backed tool helpers
 # ---------------------------------------------------------------------------
 
-# Map legacy tool names -> (MCP server_id, MCP tool_name)
+# Native tools are implemented by ``src.agent_tools.TOOL_HANDLERS``.  Keep
+# them explicit here so an MCP server with a colliding ID can never intercept
+# an unqualified native call.
+_NATIVE_DIRECT_TOOLS = frozenset({
+    "bash",
+    "python",
+    "read_file",
+    "write_file",
+    "web_search",
+    "web_fetch",
+})
+
+
+# Bundled tools that intentionally retain an unqualified MCP alias.
 _MCP_TOOL_MAP = {
-    "bash":           ("bash",       "bash"),
-    "python":         ("python",     "python"),
-    "read_file":      ("filesystem", "read_file"),
-    "write_file":     ("filesystem", "write_file"),
-    "web_search":     ("web_search", "web_search"),
-    "web_fetch":      ("web_fetch",  "web_fetch"),
     "generate_image": ("image_gen",  "generate_image"),
 }
 _EMAIL_MCP_OWNER_ARG = "_odysseus_owner"
@@ -388,45 +395,24 @@ def _parse_manage_memory(content: str) -> Dict:
     return args
 
 
-def _parse_write_file(content: str) -> Dict:
-    lines = content.split("\n", 1)
-    return {"path": lines[0].strip(), "content": lines[1] if len(lines) > 1 else ""}
-
-
 _MCP_ARG_PARSERS: Dict[str, Callable[[str], Dict[str, str]]] = {
-    "bash":           lambda c: {"command": c},
-    "python":         lambda c: {"code": c},
-    "web_search":     lambda c: {"query": c.split("\n")[0].strip()},
-    "web_fetch":      lambda c: {"url": c.split("\n")[0].strip()},
-    "read_file":      lambda c: {"path": c.split("\n")[0].strip()},
-    "write_file":     _parse_write_file,
     "generate_image": _parse_generate_image,
     "manage_memory":  _parse_manage_memory,
 }
 
 
-# Primary argument key(s) for the legacy line-parsed tools. When a fenced
+# Primary argument key(s) for bundled line-parsed MCP tools. When a fenced
 # block's content is a JSON object carrying one of these keys, it's structured
-# inline args (the relaxed parser's ```web_search {"query": "..."}``` shape) —
+# inline args (the relaxed parser's ```generate_image {"prompt": "..."}```
+# shape) —
 # use the object directly instead of letting the line-based parsers wrap the
 # whole JSON string as the query/url/path/prompt. Keyed off membership only
 # (the primary key never changes), so this can't drift; an unrecognized object
 # safely falls through to the line-based parser, i.e. the previous behavior.
 #
-# IMPORTANT — this only covers the MCP path. _build_mcp_args is reached via
-# _call_mcp_tool only for _MCP_TOOL_MAP tools (so an entry outside that map is
-# dead, as manage_memory was). And of these, only generate_image has a live MCP
-# server today; web_search/web_fetch/read_file/write_file have none, so they run
-# via _direct_fallback -> TOOL_HANDLERS, whose handlers decode JSON themselves
-# (see ReadFileTool/WriteFileTool/WebSearchTool/WebFetchTool). The entries here
-# are kept as defense-in-depth for if/when those servers are added. The live
-# fix for each server-less tool lives in its handler. test_write_file_inline_
-# json_args and test_mcp_json_primary_keys_are_all_live pin both halves.
+# This only covers the MCP path. Native web/filesystem handlers decode their
+# own inline JSON before execution and never pass through _build_mcp_args.
 _MCP_JSON_PRIMARY_KEYS: Dict[str, tuple] = {
-    "web_search":     ("query", "queries"),
-    "web_fetch":      ("url",),
-    "read_file":      ("path",),
-    "write_file":     ("path",),
     "generate_image": ("prompt",),
 }
 
@@ -450,7 +436,7 @@ async def _call_mcp_tool(
     content: str,
     progress_cb: Optional[Callable[[Dict], Awaitable[None]]] = None,
 ) -> Dict:
-    """Route a legacy tool call through the MCP manager, with direct fallbacks."""
+    """Route a bundled unqualified tool alias through the MCP manager."""
     mcp = get_mcp_manager()
     if not mcp:
         return await _direct_fallback(tool, content, progress_cb=progress_cb) or {"error": f"MCP manager not available for tool '{tool}'", "exit_code": 1}
@@ -459,12 +445,6 @@ async def _call_mcp_tool(
     qualified = f"mcp__{server_id}__{tool_name}"
     args = _build_mcp_args(tool, content)
     result = await mcp.call_tool(qualified, args)
-
-    # If MCP server not connected, try direct fallback
-    if isinstance(result, dict) and result.get("exit_code") == 1 and "not connected" in result.get("error", ""):
-        fallback = await _direct_fallback(tool, content, progress_cb=progress_cb)
-        if fallback:
-            return fallback
 
     # generate_image runs as a text-only MCP tool, so the saved image URL never
     # reaches the agent loop's structured forwarding (which renders the image via
@@ -522,6 +502,7 @@ async def _direct_fallback(
     progress_cb: Optional[Callable[[Dict], Awaitable[None]]] = None,
     session_id: Optional[str] = None,
     owner: Optional[str] = None,
+    request_id: str = "",
 ) -> Optional[Dict]:
     _subproc_env = {
         **os.environ,
@@ -537,6 +518,7 @@ async def _direct_fallback(
             "subproc_env": _subproc_env,
             "session_id": session_id,
             "owner": owner,
+            "request_id": request_id,
         }
 
         from src.agent_tools import TOOL_HANDLERS
@@ -575,12 +557,15 @@ async def execute_tool_block(
     progress_cb: Optional[Callable[[Dict], Awaitable[None]]] = None,
     workspace: Optional[str] = None,
     tool_policy: Optional[Any] = None,
+    request_id: str = "",
 ) -> Tuple[str, Dict]:
     """Execute a single tool block. Returns (description, result_dict).
 
     Thin wrapper: bind the per-turn workspace (so the path resolvers + subprocess
     cwd confine to it) for the duration of this call, then delegate. Reset on the
-    way out so the binding never leaks to the next tool call.
+    way out so the binding never leaks to the next tool call. ``request_id`` is
+    an application-generated correlation/capability identity; callers must not
+    copy it from model arguments.
     """
     token = _active_workspace.set(workspace or None)
     try:
@@ -589,6 +574,7 @@ async def execute_tool_block(
             session_id=session_id,
             disabled_tools=disabled_tools,
             owner=owner,
+            request_id=request_id,
             progress_cb=progress_cb,
             tool_policy=tool_policy,
         )
@@ -604,6 +590,7 @@ async def _execute_tool_block_impl(
     owner: Optional[str] = None,
     progress_cb: Optional[Callable[[Dict], Awaitable[None]]] = None,
     tool_policy: Optional[Any] = None,
+    request_id: str = "",
 ) -> Tuple[str, Dict]:
     """Execute a single tool block. Returns (description, result_dict).
 
@@ -739,10 +726,14 @@ async def _execute_tool_block_impl(
             logger.info(f"Tool executed: {desc} -> bg job {rec['id']}")
             return desc, result
 
-    # Route MCP-extracted tools through the MCP manager. Forward
-    # the progress callback so long-running subprocess tools
-    # (bash, python) can stream `tool_progress` events to the UI.
-    if tool in _MCP_TOOL_MAP:
+    # Native subprocess/filesystem/web tools always use their canonical local
+    # bindings.  Explicitly-qualified ``mcp__...`` calls are handled below.
+    if tool in _NATIVE_DIRECT_TOOLS:
+        first_line = content.split(chr(10))[0][:80]
+        desc = f"{tool}: {first_line}"
+        result = await _direct_fallback(tool, content, progress_cb=progress_cb) \
+            or {"error": f"{tool}: execution failed", "exit_code": 1}
+    elif tool in _MCP_TOOL_MAP:
         first_line = content.split(chr(10))[0][:80]
         desc = f"{tool}: {first_line}"
         result = await _call_mcp_tool(tool, content, progress_cb=progress_cb)
@@ -814,16 +805,16 @@ async def _execute_tool_block_impl(
         result = await do_download_model(content, owner=owner)
     elif tool == "serve_model":
         desc = "serve_model"
-        result = await do_serve_model(content, owner=owner)
+        result = await do_serve_model(content, owner=owner, request_id=request_id)
     elif tool == "list_served_models":
         desc = "list_served_models"
-        result = await do_list_served_models(content, owner=owner)
+        result = await do_list_served_models(content, owner=owner, request_id=request_id)
     elif tool == "stop_served_model":
         desc = "stop_served_model"
         result = await do_stop_served_model(content, owner=owner)
     elif tool == "tail_serve_output":
         desc = "tail_serve_output"
-        result = await do_tail_serve_output(content, owner=owner)
+        result = await do_tail_serve_output(content, owner=owner, request_id=request_id)
     elif tool == "list_downloads":
         desc = "list_downloads"
         result = await do_list_downloads(content, owner=owner)
@@ -980,9 +971,9 @@ def format_tool_result(description: str, result: Dict) -> str:
     parts = [f"### {description}"]
 
     if "stdout" in result:
-        if result["stdout"]:
+        if result.get("stdout"):
             parts.append(f"**stdout:**\n```\n{result['stdout']}\n```")
-        if result["stderr"]:
+        if result.get("stderr"):
             parts.append(f"**stderr:**\n```\n{result['stderr']}\n```")
         parts.append(f"**exit_code:** {result.get('exit_code', 'unknown')}")
     elif "output" in result:
@@ -1017,6 +1008,15 @@ def format_tool_result(description: str, result: Dict) -> str:
             parts.append(f'Document edited: "{result.get("title", "")}" (v{result.get("version", "?")}, {result.get("applied", 0)} edit(s) applied)')
     elif "error" in result:
         parts.append(f"**Error:** {result['error']}")
+
+    # Result shapes may carry an error alongside stdout/stderr (notably
+    # subprocess timeouts).  The shape-specific branch above must not hide it,
+    # but avoid echoing it again when a stream already contains the same text.
+    error = result.get("error")
+    if error not in (None, ""):
+        error_text = str(error)
+        if not any(error_text in part for part in parts[1:]):
+            parts.append(f"**Error:** {error_text}")
 
     # Surface any additional structured payload (events, tasks, notes, calendars,
     # documents, attachments, etc.) that the dedicated branches above don't show.

@@ -82,6 +82,8 @@ def _install_model_route_import_stubs(monkeypatch):
     db_mod.GalleryImage = MagicMock()
     middleware_mod = types.ModuleType("core.middleware")
     middleware_mod.require_admin = lambda request: None
+    log_safety_mod = types.ModuleType("core.log_safety")
+    log_safety_mod.redact_url = lambda url: url
     multipart_mod = types.ModuleType("python_multipart")
     multipart_mod.__version__ = "0.0.13"
     models_mod = types.ModuleType("core.models")
@@ -97,6 +99,7 @@ def _install_model_route_import_stubs(monkeypatch):
     monkeypatch.setitem(sys.modules, "core", core_mod)
     monkeypatch.setitem(sys.modules, "core.database", db_mod)
     monkeypatch.setitem(sys.modules, "core.middleware", middleware_mod)
+    monkeypatch.setitem(sys.modules, "core.log_safety", log_safety_mod)
     monkeypatch.setitem(sys.modules, "python_multipart", multipart_mod)
     monkeypatch.setitem(sys.modules, "core.models", models_mod)
     monkeypatch.setitem(sys.modules, "core.exceptions", exceptions_mod)
@@ -839,32 +842,14 @@ async def test_bare_email_dispatch_rejects_invalid_json_body(monkeypatch):
         assert mcp.calls == [], f"malformed args must never reach MCP: {bad_body!r}"
 
 
-@pytest.mark.asyncio
-async def test_legacy_mcp_tools_decode_inline_json_args(monkeypatch):
-    """The relaxed parser accepts inline JSON for non-code tags, but the legacy
-    line-based arg builders (web_search/web_fetch/read_file/write_file/
-    generate_image) would wrap the whole JSON string as the query/path/prompt.
-    A JSON object carrying the tool's primary key must be used directly."""
-    import src.tool_execution as tool_execution
+def test_bundled_mcp_tool_decodes_inline_json_args():
+    """Bundled MCP aliases preserve structured inline JSON arguments."""
     from src.tool_execution import _build_mcp_args
 
-    cases = {
-        "web_search": ('{"query": "odysseus pr 3681"}', {"query": "odysseus pr 3681"}),
-        "web_fetch": ('{"url": "https://example.com"}', {"url": "https://example.com"}),
-        "read_file": ('{"path": "/tmp/x.txt"}', {"path": "/tmp/x.txt"}),
-        "write_file": ('{"path": "/tmp/x", "content": "hi"}', {"path": "/tmp/x", "content": "hi"}),
-        "generate_image": ('{"prompt": "a cat"}', {"prompt": "a cat"}),
+    assert _build_mcp_args("generate_image", '{"prompt": "a cat"}') == {
+        "prompt": "a cat",
     }
-    for tool, (content, expected) in cases.items():
-        assert _build_mcp_args(tool, content) == expected, tool
-
-    # Freeform (non-JSON) content keeps the line-based behavior.
-    assert _build_mcp_args("web_search", "latest python release") == {"query": "latest python release"}
-    # A JSON object WITHOUT the tool's primary key is not args — fall back
-    # (write_file content the model happened to write as a bare object).
-    assert _build_mcp_args("write_file", '{"config": "value"}') == {
-        "path": '{"config": "value"}', "content": "",
-    }
+    assert _build_mcp_args("generate_image", "a cat") == {"prompt": "a cat"}
 
 
 def test_mcp_json_primary_keys_are_all_live():

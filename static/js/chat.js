@@ -12,6 +12,8 @@ import chatRenderer from './chatRenderer.js';
 import chatStream from './chatStream.js';
 import { addAITTSButton } from './tts-ai.js';
 import markdownModule from './markdown.js';
+import planStateModule from './planState.js';
+import planWindowModule from './planWindow.js';
 import spinnerModule from './spinner.js';
 import presetsModule from './presets.js';
 import fileHandlerModule from './fileHandler.js';
@@ -28,6 +30,15 @@ import { settleCancelledToolNode } from './toolRunStatus.js';
   const RESEARCH_TIMEOUT_MS = 360000;
   const DEFAULT_TIMEOUT_MS = 120000;
   const RESEARCH_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>';
+
+  // Compatibility hooks for migrated/cached plan-button integrations. The
+  // removed unversioned writer is deliberately not restored; all current
+  // updates go through the compare-and-set planState module.
+  window._getStoredPlan = () => {
+    const sid = sessionModule.getCurrentSessionId();
+    return planStateModule.getActivePlan(sid)?.text || '';
+  };
+  window.planWindowModule = planWindowModule;
 
   let API_BASE = '';
   let currentAbort = null;
@@ -1205,6 +1216,14 @@ import { settleCancelledToolNode } from './toolRunStatus.js';
         fd.append('use_research', 'true');
         // Research always runs in chat mode — override agent if set
         fd.set('mode', 'chat');
+      }
+      if (fd.get('mode') === 'agent') {
+        const activePlan = planStateModule.getActivePlan(streamSessionId);
+        if (activePlan) {
+          fd.append('approved_plan', activePlan.text);
+          fd.append('approved_plan_id', activePlan.plan_id);
+          fd.append('approved_plan_version', String(activePlan.version));
+        }
       }
       fd.append('allow_bash', el('bash-toggle').checked ? 'true' : 'false');
       const ragChk = el('rag-toggle');
@@ -2778,11 +2797,13 @@ import { settleCancelledToolNode } from './toolRunStatus.js';
                 chatRenderer.renderAskUserCard(json.data || {});
 
               } else if (json.type === 'plan_update') {
-                if (_isBg) continue;
                 // Agent wrote back to the plan (ticked a step / revised). Update
-                // the stored plan + live-refresh the docked plan window.
-                const _pu = (json.data && json.data.plan) ? json.data.plan : '';
-                if (_pu) _setStoredPlan(_pu);
+                // only the matching current revision, then live-refresh its
+                // docked plan window when this is the foreground chat.
+                planStateModule.applyPlanUpdate(json.data || {}, streamSessionId, {
+                  onApplied: _isBg ? null : planWindowModule.updateOpenPlanWindow,
+                });
+                if (_isBg) continue;
 
               } else if (json.type === 'agent_step') {
                 if (_isBg) continue;

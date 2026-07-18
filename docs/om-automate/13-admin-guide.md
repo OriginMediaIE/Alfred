@@ -164,7 +164,7 @@ Keep open signup disabled except for a controlled enrollment window on a private
 
 Current privileges do not distinguish `email.read` from `email.send`, `calendar.write` from `calendar.delete`, or a narrow file root from the whole enabled tool class. Administrator status provides broad access. There is no general risk classification, exact-version approval token, durable action state, or immutable action ledger.
 
-The common executor and plan/admin backstops are valuable defenses but are not a complete authorization system. Non-native model prose can still reach executable tool parsing. Shell/Python/MCP can inherit sensitive environment values, and current file roots can include application data.
+The common executor and plan/admin backstops are valuable defenses but are not a complete authorization system. Non-native model prose can still reach executable tool parsing. Shell/Python/MCP can inherit sensitive environment values, and current file roots can include application data. Cookbook log diagnostics now require a same-owner/internal-request launch → failed-list → one-shot-tail sequence, but that capability is process-local and must not be treated as durable action ownership or audit evidence.
 
 ### Safe current policy
 

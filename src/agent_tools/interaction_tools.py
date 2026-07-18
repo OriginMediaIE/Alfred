@@ -1,6 +1,8 @@
 import json
 import logging
 
+from src.active_plan import get_active_plan
+
 logger = logging.getLogger(__name__)
 
 class AskUserTool:
@@ -82,12 +84,19 @@ class UpdatePlanTool:
                 "exit_code": 1,
             }
 
+        active_plan = get_active_plan()
+        if active_plan is None:
+            return "update_plan: no active plan", {
+                "error": "There is no active approved plan to update.",
+                "exit_code": 1,
+            }
+
         plan = plan[:8192]
         done = plan.count("- [x]") + plan.count("- [X]")
         total = done + plan.count("- [ ]")
         desc = f"update_plan: {done}/{total} done" if total else "update_plan"
         result = {
-            "plan_update": {"plan": plan},
+            "plan_update": active_plan.advance(plan),
             "output": f"Plan updated ({done}/{total} steps complete)." if total else "Plan updated.",
             "exit_code": 0,
         }

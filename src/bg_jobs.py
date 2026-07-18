@@ -251,7 +251,13 @@ def mark_followed_up(job_id: str) -> None:
 
 
 def get(job_id: str) -> Optional[Dict[str, Any]]:
-    refresh()  # reconcile against disk so status/exit_code are current
+    """Return a read-only snapshot without reconciling global job state.
+
+    Completion, timeout reaping, and retention pruning belong to the monitor's
+    ``refresh()`` loop. An interactive list/output request must not turn into an
+    unapproved process kill or cross-session filesystem cleanup.
+    """
+
     rec = _load().get(job_id)
     if rec:
         rec = dict(rec)
@@ -259,18 +265,43 @@ def get(job_id: str) -> Optional[Dict[str, Any]]:
     return rec
 
 
+def get_for_session(job_id: str, session_id: str) -> Optional[Dict[str, Any]]:
+    """Return an observational snapshot only when the job belongs to a chat."""
+
+    rec = get(job_id)
+    if rec is None or rec.get("session_id") != session_id:
+        return None
+    return rec
+
+
 def list_for_session(session_id: str) -> List[Dict[str, Any]]:
-    return [r for r in refresh().values() if r.get("session_id") == session_id]
+    """List stored chat-owned records without reconciliation or persistence."""
+
+    return [
+        dict(rec)
+        for rec in _load().values()
+        if rec.get("session_id") == session_id
+    ]
 
 
-def kill(job_id: str) -> Optional[Dict[str, Any]]:
+def kill(
+    job_id: str,
+    *,
+    session_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
     """Terminate a running job's process tree and mark it killed. Returns the
     updated record, or None if the id is unknown. Idempotent: a job that already
     finished is returned unchanged. Sets followed_up so the monitor does not also
-    fire an auto-continue for a job the agent deliberately stopped."""
+    fire an auto-continue for a job the agent deliberately stopped.
+
+    When ``session_id`` is provided, ownership is checked in the same loaded
+    snapshot before any signal or write. This avoids a tool-layer check/use gap.
+    """
     jobs = _load()
     rec = jobs.get(job_id)
-    if rec is None:
+    if rec is None or (
+        session_id is not None and rec.get("session_id") != session_id
+    ):
         return None
     if rec.get("status") == "running":
         _kill(rec.get("pid"))

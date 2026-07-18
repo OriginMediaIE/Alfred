@@ -485,7 +485,11 @@ async def do_download_model(content: str, owner: Optional[str] = None) -> Dict:
         return {"error": str(e), "exit_code": 1}
 
 
-async def do_serve_model(content: str, owner: Optional[str] = None) -> Dict:
+async def do_serve_model(
+    content: str,
+    owner: Optional[str] = None,
+    request_id: str = "",
+) -> Dict:
     """Start serving a model via the cookbook API."""
     from src.tool_implementations import _internal_headers, _INTERNAL_BASE  # shared, lives in facade
     import httpx
@@ -561,6 +565,15 @@ async def do_serve_model(content: str, owner: Optional[str] = None) -> Dict:
                 host=host, cmd=cmd, task_type="serve",
                 endpoint_added=endpoint_added, endpoint_id=endpoint_id or "",
             )
+            from src.cookbook_diagnostics import record_launch
+
+            record_launch(
+                owner=owner,
+                request_id=request_id,
+                session_id=sid,
+                remote_host=host,
+                ssh_port=_string_arg(env_cfg.get("ssh_port")),
+            )
             note = "" if registered else " (state-write failed — task may not show in UI)"
             where = host or "local"
             log_path = f"/tmp/odysseus-tmux/{sid}.log"
@@ -600,7 +613,11 @@ async def do_serve_model(content: str, owner: Optional[str] = None) -> Dict:
         return {"error": str(e), "exit_code": 1}
 
 
-async def do_list_served_models(content: str, owner: Optional[str] = None) -> Dict:
+async def do_list_served_models(
+    content: str,
+    owner: Optional[str] = None,
+    request_id: str = "",
+) -> Dict:
     """List running model servers — merges cookbook-tracked tasks with
     a /proc scan for externally-launched LLM/diffusion processes
     (vLLM, sglang, llama.cpp, Ollama, ComfyUI, A1111, Fooocus, etc.)."""
@@ -633,6 +650,14 @@ async def do_list_served_models(content: str, owner: Optional[str] = None) -> Di
     for p in external:
         if p.get("pid") not in cookbook_pids:
             merged.append(p)
+
+    from src.cookbook_diagnostics import record_listed_statuses
+
+    record_listed_statuses(
+        owner=owner,
+        request_id=request_id,
+        tasks=merged,
+    )
 
     if not merged:
         return {
@@ -815,7 +840,11 @@ async def do_stop_served_model(content: str, owner: Optional[str] = None) -> Dic
     )
 
 
-async def do_tail_serve_output(content: str, owner: Optional[str] = None) -> Dict:
+async def do_tail_serve_output(
+    content: str,
+    owner: Optional[str] = None,
+    request_id: str = "",
+) -> Dict:
     """Capture the last N lines of a cookbook task's tmux pane — remote-aware.
 
     Used by the agent to debug a failed/stuck serve: list_served_models tells
@@ -845,23 +874,33 @@ async def do_tail_serve_output(content: str, owner: Optional[str] = None) -> Dic
     headers = _internal_headers()
     remote = _string_arg(args.get("remote_host") or args.get("host"))
     sport = _string_arg(args.get("ssh_port"))
-    # Resolve host from cookbook state if caller didn't pass one — same
-    # lookup _cookbook_kill_session uses.
-    if not remote:
-        state: Dict[str, Any] = {}
+    # Validate any caller-supplied target before checking the grant so malformed
+    # values remain clear input errors. Authority still comes exclusively from
+    # the launch/status capability below; caller values cannot redirect it.
+    if remote:
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(f"{_INTERNAL_BASE}/api/cookbook/state", headers=headers)
-                state = resp.json() or {}
-        except Exception as e:
-            logger.debug(f"cookbook state lookup failed for {session_id}: {e}")
-        if isinstance(state, dict):
-            for t in (state.get("tasks") or []):
-                if isinstance(t, dict) and (t.get("sessionId") == session_id or t.get("id") == session_id):
-                    remote = t.get("remoteHost") or ""
-                    if not sport:
-                        sport = t.get("sshPort") or ""
-                    break
+            remote, sport = _validate_cookbook_ssh_target(remote, sport)
+        except HTTPException as e:
+            return {"error": str(getattr(e, "detail", e)), "exit_code": 1}
+
+    from src.cookbook_diagnostics import (
+        DiagnosticAuthorizationError,
+        authorize_tail,
+    )
+
+    try:
+        authorization = authorize_tail(
+            owner=owner,
+            request_id=request_id,
+            session_id=session_id,
+            requested_remote_host=remote,
+            requested_ssh_port=sport,
+        )
+    except DiagnosticAuthorizationError as e:
+        return {"error": str(e), "exit_code": 1}
+
+    remote = authorization.remote_host
+    sport = authorization.ssh_port
     if remote:
         try:
             remote, sport = _validate_cookbook_ssh_target(remote, sport)

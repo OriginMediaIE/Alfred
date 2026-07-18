@@ -90,6 +90,8 @@ Use these rules on the current build:
 - Verify every consequential result in the source system. A model statement that an action succeeded is not proof.
 - If Stop is used, local owned tool tasks now cancel and their cards settle as `cancelled`; a remote provider may nevertheless have committed an effect. Check provider state before retrying.
 
+The current build safely rejects `update_plan` when no active browser-backed plan exists and version-checks progress events from a bound plan. This is not the target planner or an approval record: the historical proposal/approval UI is absent, plan state is not durable on the server, and a plan does not authorize consequential tools.
+
 The current application can expose raw model reasoning under a “thinking process” view. Do not treat it as a reliable explanation or audit record. The target UI will show concise action summaries without hidden chain-of-thought.
 
 ### 3.4 Incognito warning
