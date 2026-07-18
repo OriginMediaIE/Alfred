@@ -13,10 +13,95 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.parametrize("module", ["src.tool_schemas", "src.tool_parsing"])
+@pytest.mark.parametrize(
+    "module",
+    [
+        "src.tool_types",
+        "src.tool_registry",
+        "src.tool_schema_catalog",
+        "src.tool_schemas",
+        "src.tool_parsing",
+        "src.tool_security",
+        "src.tool_policy",
+    ],
+)
 def test_tool_modules_cold_import_in_fresh_process(module: str) -> None:
     completed = subprocess.run(
         [sys.executable, "-c", f"import {module}"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_building_static_registry_does_not_import_runtime_layers() -> None:
+    script = r'''
+import sys
+from src.tool_registry import build_builtin_registry
+
+registry = build_builtin_registry()
+assert len(registry) == 77
+
+forbidden = (
+    "app",
+    "core.database",
+    "routes",
+    "src.agent_loop",
+    "src.agent_tools",
+    "src.tool_execution",
+    "src.tool_index",
+    "src.tool_parsing",
+    "src.tool_security",
+)
+loaded = sorted(
+    name for name in sys.modules
+    if any(name == item or name.startswith(item + ".") for item in forbidden)
+)
+assert not loaded, loaded
+'''
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_plan_projection_and_known_names_are_cold_import_safe() -> None:
+    script = r'''
+import sys
+from src.tool_registry import BUILTIN_TOOL_NAMES, PLAN_MODE_ALLOWED_TOOL_NAMES
+from src.tool_policy import known_tool_names
+from src.tool_security import PLAN_MODE_READONLY_TOOLS, plan_mode_disabled_tools
+
+assert PLAN_MODE_READONLY_TOOLS is PLAN_MODE_ALLOWED_TOOL_NAMES
+assert plan_mode_disabled_tools() == set(BUILTIN_TOOL_NAMES - PLAN_MODE_ALLOWED_TOOL_NAMES)
+assert known_tool_names() == set(BUILTIN_TOOL_NAMES) | {"builtin_browser"}
+
+forbidden = (
+    "app",
+    "core.database",
+    "routes",
+    "src.agent_loop",
+    "src.agent_tools",
+    "src.tool_execution",
+    "src.tool_schema_catalog",
+    "src.tool_schemas",
+)
+loaded = sorted(
+    name for name in sys.modules
+    if any(name == item or name.startswith(item + ".") for item in forbidden)
+)
+assert not loaded, loaded
+'''
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
         cwd=ROOT,
         capture_output=True,
         text=True,

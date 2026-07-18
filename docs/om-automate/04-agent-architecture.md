@@ -1,7 +1,7 @@
 # OM Automate agent architecture
 
 **Baseline inspected:** `om-automate/main` at `9844a2f9a1996b8c8135a9e7bbde6a72f41df5ed`
-**Status:** Current implementation documented; target architecture is a design contract and is not yet implemented.
+**Status:** Current implementation documented. SAFE-001 and SAFE-002 checkpoint B provide partial compatibility foundations; the target approval, policy, durable-action, and verification architecture is not yet implemented.
 **Detailed current traces:** [02-current-architecture.md](02-current-architecture.md#ordinary-chat-trace) and [02-current-architecture.md](02-current-architecture.md#tool-response-trace)
 
 ## Purpose
@@ -32,10 +32,10 @@ The agent boundary must guarantee:
 | System/tool prompt | `src/agent_loop.py:1-140` and context preface builders | Tells the model how to emit tool blocks and claims a 60-second timeout. | **Replace executable-text instructions.** Keep safety/persona content, expose capabilities through typed schemas only. |
 | Model provider | `src/llm_core.py`; provider detection at `:817-852` | Normalizes many local/hosted providers, retry and streaming formats. | **Retain behind a provider adapter.** Provider capability must be declared, not guessed throughout orchestration. |
 | Tool selection | `src/tool_index.py`; selection in `src/agent_loop.py:2746+` | Semantic selection with keyword fallback; can degrade if embeddings are unavailable. | **Retain as advisory retrieval.** It may reduce schemas, but cannot grant permission. |
-| Native schema exposure | `src/tool_schemas.py` | OpenAI-style input parameter schemas only. | **Replace source of truth.** Generate provider schemas from the typed registry. |
+| Native schema exposure | Pure, handler-free `src/tool_schema_catalog.py`; thin `src/tool_schemas.py` facade | OpenAI-style input schemas are cold-importable. Registry definitions consume this compatibility catalog; schemas are not yet generated from registry definitions. | **Finish the projection.** Generate provider schemas from the typed registry after preserving the compatibility facade. |
 | Text-call parsing | `src/tool_parsing.py:1235-1407` | Parses fenced, XML, DSML and raw JSON formats from model prose. | **Remove from executable path.** It may remain temporarily for non-effectful compatibility parsing behind a feature flag. |
 | Call resolution | `src/agent_loop.py:_resolve_tool_blocks`, `:2175-2223` | Native calls preferred; non-native structured text can become a tool block. | **Replace with validated action-envelope decoding.** |
-| Policy | `src/tool_policy.py`; `src/tool_security.py` | Per-turn denylist, hidden tools, guide-only/block-all, coarse admin and plan read-only checks. | **Retain as defence-in-depth, replace as primary policy.** Add scope, resource, risk and approval evaluation. |
+| Policy | `src/tool_policy.py`; `src/tool_security.py`; identity/projection constants in `src/tool_registry.py` | Per-turn denylist, hidden tools, guide-only/block-all, coarse admin checks, canonical static identities plus dynamic `builtin_browser`, and a frozen 23-allow/54-deny plan projection. Typed risk/permission metadata is not consulted at execution. | **Retain as defence-in-depth, replace as primary policy.** Add scope, resource, risk and approval evaluation driven by the registry. |
 | Execution | `src/tool_execution.py:570-962` | Common wrapper followed by new-handler, legacy branch and MCP dispatch; returns arbitrary dict/text values. | **Refactor behind one executor and domain commands.** Remove parallel registries/dispatch paths. |
 | Tool loop | `src/agent_loop.py:2541-4475` | Model chooses actions, tool results are appended, loop breaker detects repetition, then model synthesizes a final answer. | **Refactor into planner/orchestrator/executor/result synthesizer.** Preserve streaming and loop-breaker concepts. |
 | Verification | `_run_verifier_subagent`, `src/agent_loop.py:2408+` | Optional for a small effectful set; compares snapshots; fails open. | **Replace for important effects with deterministic provider readback.** LLM verification may supplement, never substitute. |
@@ -76,6 +76,7 @@ Exact paths and line references are in the tool-response trace in `02-current-ar
 - Effective disabled-tool policy is built at `routes/chat_routes.py:873-1008`.
 - Execution rechecks policy/admin/plan restrictions at `src/tool_execution.py:680-712`.
 - Non-admin and plan-mode backstops live in `src/tool_security.py:40-161`.
+- SAFE-002 checkpoint B derives plan-mode's 54-name deny projection from the complete 77-name static registry and adds `tail_serve_output` to the non-admin backstop.
 - Workspace and sensitive-path checks live in `src/tool_execution.py:43-278` and filesystem tools.
 - Repeated signatures and stalled rounds trigger a loop breaker at `src/agent_loop.py:3864-3920`.
 - Text-model tool results are wrapped as untrusted context by `_append_tool_results()` at `src/agent_loop.py:2226-2305`.
@@ -99,15 +100,24 @@ SAFE-001 now routes tool execution through `src/tool_run_lifecycle.py:Cancellabl
 
 **Remaining required change:** Local cancellation cannot prove whether a remote provider already committed an effect. The durable action work must atomically record `cancel_requested`, signal the concrete executor/provider, apply a bounded deadline, read provider state back, and record whether the effect was cancelled, completed, partial, or indeterminate.
 
-### 3. Registry and import drift
+### 3. Registry foundation exists; runtime authority remains fragmented
 
-Tool metadata is spread across `FUNCTION_TOOL_SCHEMAS`, `TOOL_TAGS`, `TOOL_HANDLERS`, `TOOL_SECTIONS`, `BUILTIN_TOOL_DESCRIPTIONS`, a legacy `elif` chain and MCP discovery. A runtime inventory found 74 distinct names but only 27 common to every collection.
+At the audited baseline, tool metadata was spread across `FUNCTION_TOOL_SCHEMAS`, `TOOL_TAGS`, `TOOL_HANDLERS`, `TOOL_SECTIONS`, `BUILTIN_TOOL_DESCRIPTIONS`, a legacy `elif` chain, and MCP discovery. A runtime inventory found 74 distinct names but only 27 common to every collection; `tail_serve_output` was unreachable through fenced conversion and a cold `src.tool_schemas` import failed through a cycle.
 
-The drift is observable: `tail_serve_output` is exposed at `src/tool_schemas.py:855`, omitted from `TOOL_TAGS`, and rejected by `function_call_to_tool_block()` at `:1333-1335`.
+SAFE-002 checkpoints A and B repaired those confirmed identity/import defects and added the following compatibility foundation:
 
-A clean `import src.tool_schemas` also fails through a circular dependency unless `src.agent_tools` is imported first. Import-order workarounds are documented at `src/tool_execution.py:629-638` and `src/tool_security.py:173-179`.
+- One immutable registry accounts for all **77** static identities and preserves native, fence, and internal-only surfaces.
+- **12** simple operations have typed metadata. **65** remain an explicit frozen `legacy_unclassified` set whose registry metadata resolves Level 3/always-confirmed with no retry, no idempotency assumption, indeterminate verification, and manual reconciliation.
+- Pure, handler-free schema data/conversion lives in `src/tool_schema_catalog.py`; `src/tool_schemas.py` is a thin compatibility facade.
+- Plan mode allows exactly **23** frozen compatibility names and blocks the exact **54-name** complement. `edit_file`, `vault_search`, `vault_get`, and `vault_unlock` are pinned in that deny projection.
+- `known_tool_names()` uses the 77 canonical static identities plus the separately declared dynamic native name `builtin_browser`.
+- `tail_serve_output` is reachable and now has an interim non-admin gate.
 
-**Required change:** One acyclic registry owns all metadata and the callable binding. Provider schemas, search descriptions, UI copy and audit labels are derived views.
+This is **registry metadata and projection work only**. The runtime dispatcher does not use registry permission, approval, risk, timeout, retry, idempotency, compensation, audit, or verification fields as enforcement. Sixteen plan-allowed names are still unclassified compatibility debt. Handler binding remains descriptive/lazy, schemas flow into the registry rather than being emitted from it, and prompt/index/UI/dispatcher/MCP views remain partly independent.
+
+`tail_serve_output` also remains incomplete: an administrator can request any syntactically valid session ID, without proof that the session belongs to that caller or that it is the new failed task produced by the documented `serve_model` → `list_served_models` sequence.
+
+**Required change:** Make registry lookup and operation-level policy the only route to execution; generate remaining provider/search/UI/audit projections; add owner and launch-sequence checks for cookbook diagnostics; shrink legacy debt without granting new exposure.
 
 ### 4. Approval is not an agent-wide primitive
 
@@ -134,9 +144,45 @@ The verifier at `src/agent_loop.py:2408+` applies only to a small hard-coded set
 - Prompt claim: 60 seconds (`src/agent_loop.py:116`)
 - Legacy shell/Python constants: 60/30 seconds (`src/agent_tools/__init__.py:71-73`)
 - Actual subprocess defaults: one hour (`src/agent_tools/subprocess_tools.py:8-9,117,143`)
+- Checkpoint-B bash/Python metadata: one hour, but the executor does not consume it (`src/tool_registry.py`)
 - Route defaults: zero means unlimited tool calls, with up to 200 rounds (`routes/chat_routes.py:1393-1403`)
 
-**Required change:** Timeouts, retries and budgets are registry/policy values enforced by one executor and surfaced to the UI.
+Timeout results add another presentation split: the subprocess returns `error`, `stdout`, `stderr`, and exit code 124, but `format_tool_result()` chooses the `stdout` branch and omits `error`. The browser's separate output path has an error fallback; the LLM-facing formatted result may contain only the exit code.
+
+**Required change:** Timeouts, retries and budgets must be registry/policy values enforced by one executor and surfaced consistently to the model, UI, and audit record. Timeout tests must assert the reason survives formatting as well as process-tree termination.
+
+### 8. Compatibility helpers still cross or misstate boundaries
+
+- `update_plan` returns a successful `plan_update` for any non-empty checklist and never checks whether an active plan exists. The corresponding browser branch calls undefined `_setStoredPlan`, so its advertised no-active-plan no-op and live dock refresh are both unproven.
+- `manage_bg_jobs` presents list/output as reads, but both call global `bg_jobs.refresh()` before session filtering. Refresh can kill every session's timed-out processes and prune old records/files, so a read scoped to one chat can mutate other chats' job state.
+- `_MCP_TOOL_MAP` still sends bash, Python, filesystem, and web operations toward built-in MCP server IDs that were removed when those tools became native. Native fallback happens only after a specific “not connected” response, leaving routing semantics dependent on stale server identity and error text.
+
+**Required change:** Make interaction helpers validate application state, separate background-job observation from global reconciliation, remove stale MCP routes, and add live-path contract tests rather than testing helper-only paths.
+
+## SAFE-002 checkpoint B contract snapshot
+
+| Checkpoint property | Implemented | Still open |
+|---|---|---|
+| Static identity | Immutable 77-tool registry; native/fence/internal surface projections | Dynamic MCP tools need a validated policy namespace and overlay |
+| Classification | 12 typed records; 65 explicit fail-closed legacy records | Classify 65 operations, including 16 plan-compatible reads; split mixed `manage_*` actions |
+| Plan mode | Exact 23-name compatibility allowlist; exact 54-name canonical deny projection | Replace compatibility choices with operation-level typed policy after classification |
+| Schema/import graph | Pure, handler-free `tool_schema_catalog`; thin `tool_schemas` facade; cold-import cycle remains repaired | Generate schemas from definitions and migrate prompt/index/UI/handlers |
+| Policy identity | Canonical static identities plus dynamic `builtin_browser` | Runtime scope/risk/approval engine and dynamic MCP overlay |
+| Cookbook diagnostics | Reachable `tail_serve_output`; non-admin gate | Caller ownership and fresh-launch sequence enforcement |
+| Verification evidence | 37 earlier focused checks; 28 contract checks; an earlier combined set at 62 passed; latest expanded focused gate **77 passed, 1 warning** | Final-state restricted full suite reached **4,558 passed, 3 skipped, 20 environment-only failures, 8 warnings in 132.80s**. The socket-enabled rerun was blocked by the account usage limit until 2026-07-25, so checkpoint B has no passing full-suite claim. Checkpoint A's older socket-enabled 4,538-pass result applies only to its prior code. |
+
+The 23-name compatibility allowlist is:
+
+```text
+ask_teacher, chat_with_model, get_workspace, glob, grep,
+list_cached_models, list_cookbook_servers, list_downloads,
+list_email_accounts, list_emails, list_models, list_serve_presets,
+list_served_models, list_sessions, ls, read_email, read_file,
+resolve_contact, search_chats, search_emails, search_hf_models,
+web_fetch, web_search
+```
+
+Of those, these 16 remain `legacy_unclassified`: `ask_teacher`, `chat_with_model`, `list_cached_models`, `list_cookbook_servers`, `list_downloads`, `list_email_accounts`, `list_emails`, `list_models`, `list_serve_presets`, `list_served_models`, `list_sessions`, `read_email`, `resolve_contact`, `search_chats`, `search_emails`, and `search_hf_models`.
 
 ## Target architecture
 

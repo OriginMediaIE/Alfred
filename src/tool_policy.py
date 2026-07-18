@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Iterable, Mapping, Optional, Set, Tuple
 
+from src.tool_registry import BUILTIN_TOOL_NAMES
+
 
 GUIDE_ONLY_DIRECTIVE = (
     "## GUIDE-ONLY MODE - TOOL POLICY\n"
@@ -50,76 +52,7 @@ def web_search_enabled_for_turn(allow_web_search: object, use_web: object = None
     return tool_toggle_enabled(allow_web_search) or tool_toggle_enabled(use_web)
 
 
-_COMMON_TOOL_NAMES = {
-    "api_call",
-    "app_api",
-    "archive_email",
-    "ask_teacher",
-    "ask_user",
-    "bash",
-    "bulk_email",
-    "builtin_browser",
-    "cancel_download",
-    "chat_with_model",
-    "create_document",
-    "create_session",
-    "delete_email",
-    "download_model",
-    "edit_document",
-    "edit_file",
-    "edit_image",
-    "generate_image",
-    "glob",
-    "grep",
-    "list_cached_models",
-    "list_cookbook_servers",
-    "list_downloads",
-    "list_emails",
-    "list_models",
-    "list_serve_presets",
-    "list_served_models",
-    "list_sessions",
-    "ls",
-    "manage_calendar",
-    "manage_contact",
-    "manage_documents",
-    "manage_endpoints",
-    "manage_mcp",
-    "manage_memory",
-    "manage_notes",
-    "manage_research",
-    "manage_session",
-    "manage_settings",
-    "manage_skills",
-    "manage_tasks",
-    "manage_tokens",
-    "manage_webhooks",
-    "mark_email_read",
-    "pipeline",
-    "python",
-    "read_email",
-    "read_file",
-    "reply_to_email",
-    "resolve_contact",
-    "search_chats",
-    "search_hf_models",
-    "send_email",
-    "send_to_session",
-    "serve_model",
-    "serve_preset",
-    "stop_served_model",
-    "suggest_document",
-    "trigger_research",
-    "ui_control",
-    "update_document",
-    "update_plan",
-    "vault_get",
-    "vault_search",
-    "vault_unlock",
-    "web_fetch",
-    "web_search",
-    "write_file",
-}
+_DYNAMIC_NATIVE_TOOL_NAMES = frozenset({"builtin_browser"})
 
 
 _GUIDE_ONLY_PATTERNS: Tuple[Tuple[re.Pattern[str], str], ...] = tuple(
@@ -176,32 +109,9 @@ def detect_guide_only_turn(message: object) -> Optional[str]:
 
 
 def known_tool_names() -> Set[str]:
-    """Best-effort set of native tool names for prompt hiding and denylisting."""
+    """Canonical static identities plus explicitly dynamic native capabilities."""
 
-    names = set(_COMMON_TOOL_NAMES)
-    try:
-        from src.tool_schemas import FUNCTION_TOOL_SCHEMAS
-
-        for schema in FUNCTION_TOOL_SCHEMAS:
-            name = (schema.get("function") or {}).get("name") or schema.get("name")
-            if name:
-                names.add(name)
-    except Exception:
-        pass
-    try:
-        from src.agent_loop import TOOL_SECTIONS
-
-        names.update(TOOL_SECTIONS.keys())
-    except Exception:
-        pass
-    try:
-        from src.tool_security import PLAN_MODE_READONLY_TOOLS, _PLAN_MODE_KNOWN_MUTATORS
-
-        names.update(PLAN_MODE_READONLY_TOOLS)
-        names.update(_PLAN_MODE_KNOWN_MUTATORS)
-    except Exception:
-        pass
-    return names
+    return set(BUILTIN_TOOL_NAMES | _DYNAMIC_NATIVE_TOOL_NAMES)
 
 
 def build_effective_tool_policy(

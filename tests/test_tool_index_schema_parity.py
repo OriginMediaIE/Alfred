@@ -1,7 +1,7 @@
 """Every FUNCTION_TOOL_SCHEMAS tool must have a ToolIndex description.
 
 Agent mode selects tools by embedding BUILTIN_TOOL_DESCRIPTIONS and
-retrieving the top-K per message. A tool that exists in tool_schemas but has
+retrieving the top-K per message. A tool that exists in the native schema catalog but has
 no description entry can never be retrieved, so the agent advertises the
 capability (e.g. API integrations in the system prompt) while the schema is
 never actually sent to the model. api_call was missing exactly this way.
@@ -27,7 +27,10 @@ def _assigned_value(tree, name):
 
 
 def _schema_tool_names():
-    src = open(os.path.join(ROOT, "src", "tool_schemas.py"), encoding="utf-8").read()
+    src = open(
+        os.path.join(ROOT, "src", "tool_schema_catalog.py"),
+        encoding="utf-8",
+    ).read()
     value = _assigned_value(ast.parse(src), "FUNCTION_TOOL_SCHEMAS")
     return {item["function"]["name"] for item in ast.literal_eval(value)}
 

@@ -7,17 +7,18 @@ contract:
 - The read-only allowlist contains only inspection tools (no writes/sends/manage_*).
 - `plan_mode_disabled_tools()` blocks every mutating tool and never blocks an
   allowlisted one.
-- It fails CLOSED: if the tool-schema list can't be loaded, it still blocks a
-  known-mutating set rather than returning nothing (which would allow mutations).
+- It fails CLOSED from a dependency-light canonical inventory: every built-in
+  name outside the frozen compatibility allowlist is blocked.
 
 Pure-function tests — no FastAPI app boot, no DB.
 """
 
-from src.tool_security import (
-    PLAN_MODE_READONLY_TOOLS,
-    _PLAN_MODE_KNOWN_MUTATORS,
-    plan_mode_disabled_tools,
-)
+import asyncio
+
+from src.tool_execution import execute_tool_block
+from src.tool_registry import BUILTIN_TOOL_NAMES, PLAN_MODE_ALLOWED_TOOL_NAMES
+from src.tool_security import PLAN_MODE_READONLY_TOOLS, plan_mode_disabled_tools
+from src.tool_types import ToolBlock
 
 
 def test_allowlist_has_no_obvious_mutating_tools():
@@ -71,23 +72,27 @@ def test_mcp_readonly_classification():
     assert ro({"name": "frobnicate"}) is False
 
 
-def test_fail_closed_fallback_blocks_mutations(monkeypatch):
-    # If the schema list can't load, we must still block (fail closed), not
-    # return an empty set that would silently allow every mutating tool.
-    import src.tool_security as ts
+def test_plan_mode_is_exact_canonical_partition_without_schema_imports():
+    disabled = plan_mode_disabled_tools()
 
-    def _boom():
-        raise ImportError("simulated circular import failure")
+    assert PLAN_MODE_READONLY_TOOLS is PLAN_MODE_ALLOWED_TOOL_NAMES
+    assert disabled == set(BUILTIN_TOOL_NAMES - PLAN_MODE_ALLOWED_TOOL_NAMES)
+    assert not disabled & PLAN_MODE_ALLOWED_TOOL_NAMES
+    assert disabled | PLAN_MODE_ALLOWED_TOOL_NAMES == BUILTIN_TOOL_NAMES
+    assert {"edit_file", "vault_search", "vault_get", "vault_unlock"} <= disabled
 
-    # Force the dynamic path to fail by making the lazy import explode.
-    monkeypatch.setitem(
-        __import__("sys").modules, "src.agent_tools", None
+
+def test_plan_mode_executor_rejects_internal_vault_tool_before_dispatch():
+    description, result = asyncio.run(
+        execute_tool_block(
+            ToolBlock("vault_get", '{"path":"private"}'),
+            disabled_tools=plan_mode_disabled_tools(),
+        )
     )
-    disabled = ts.plan_mode_disabled_tools()
-    assert disabled, "plan mode must never fail open (empty disabled set)"
-    assert "write_file" in disabled
-    assert "send_email" in disabled
-    assert disabled == set(_PLAN_MODE_KNOWN_MUTATORS)
+
+    assert description == "vault_get: BLOCKED"
+    assert result["exit_code"] == 1
+    assert "disabled" in result["error"]
 
 
 def test_active_plan_note_pins_checklist():

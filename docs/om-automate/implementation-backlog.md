@@ -30,7 +30,7 @@ Complexity estimates are relative engineering sizes: **S** (small, focused), **M
 | ID | Description | Dependencies | Files or modules likely involved | Risk | Estimated complexity | Test requirements | Acceptance criteria |
 |---|---|---|---|---|---|---|---|
 | SAFE-001 | Fix Stop propagation so cancellation reaches the active tool/worker/process tree and reconciles partial effects. **Local child ownership/UI state implemented; durable provider reconciliation remains.** | BASE-002 | `src/agent_loop.py`, `src/agent_runs.py`, tool adapters, chat SSE/UI | High | M | In-flight sync/async/subprocess/MCP cancellation, descendant kill, race, partial-effect readback, restart. | Stop cannot leave an untracked tool running; action is visibly/persistently `cancelled`, `partially completed`, or `completed and verified` based on readback. |
-| SAFE-002 | Consolidate schemas, handlers, descriptions, UI metadata, policy metadata, timeouts, retry, idempotency, reversibility, and verification into one typed tool registry. | BASE-002 | `src/tool_schemas.py`, `src/tool_execution.py`, `src/tools/**`, `src/agent_tools/**`, new registry types | High | L | Cold/random import, registry completeness, schema round-trip, orphan/duplicate, `tail_serve_output`, timeout contract. | Every executable capability has exactly one canonical definition with typed input/output and complete policy metadata; startup fails closed on drift. |
+| SAFE-002 | Consolidate schemas, handlers, descriptions, UI metadata, policy metadata, timeouts, retry, idempotency, reversibility, and verification into one typed tool registry. **Checkpoint B partial:** immutable 77-tool metadata registry and canonical compatibility projections exist; 12 tools are typed and 65 remain fail-closed legacy debt. Runtime enforcement is not implemented. | BASE-002 | `src/tool_registry.py`, `src/tool_schema_catalog.py`, `src/tool_schemas.py`, `src/tool_policy.py`, `src/tool_security.py`, `src/tool_execution.py`, `src/tools/**`, `src/agent_tools/**` | High | L | Cold/random import, registry completeness/immutability, schema round-trip, orphan/duplicate, plan projection, `tail_serve_output`, timeout contract. Latest focused gate: 77 passed, 1 warning. Restricted full suite has 20 environment-only failures; socket-enabled rerun remains required. | Every executable capability has exactly one canonical definition with typed input/output and complete policy metadata; startup fails closed on drift; runtime permission/approval/risk/timeout/retry/idempotency/audit/verification decisions are registry-driven. **Not yet accepted.** |
 | SAFE-003 | Replace executable structured prose with validated typed action envelopes and model capability profiles. | SAFE-002 | `src/tool_parsing.py`, `src/agent_loop.py`, `src/llm_core.py`, provider adapters, prompts | High | L | Malformed/ambiguous/duplicate calls; non-native models; injection corpus in email/web/RAG/files; capability qualification. | Ordinary text is never executable; only schema-valid envelopes from approved capable models enter policy; unsupported models remain chat-only. |
 | SAFE-004 | Build a deny-by-default policy engine for user/tool/resource scopes and four risk levels. | SAFE-002, auth scope design | `src/tool_policy.py`, `src/tool_security.py`, `core/auth.py`, new policy service | High | L | Exhaustive tool×role×scope×risk matrix, resource ownership, admin/non-admin, policy failure/timeouts. | Every tool request receives an explicit allow/deny/approval decision; policy failure denies; credentials are never supplied to the model. |
 | SAFE-005 | Create durable run/action/attempt/result/verification/audit records with state transitions and idempotency keys. | SAFE-002, migration framework seed | `core/database.py`, new models/repositories/services, `src/agent_runs.py`, scheduler | High | XL | Crash at every transition, concurrent duplicate, replay, restart recovery, data migration, audit immutability. | Every action maps to user request/tool/arguments hash/actor/timestamps/status; retry cannot silently duplicate effects; runs resume/reconcile after restart. |
@@ -39,6 +39,31 @@ Complexity estimates are relative engineering sizes: **S** (small, focused), **M
 | SAFE-008 | Sandbox shell, Python, file, and MCP execution with minimal environments and purpose-specific roots. | SAFE-002, SAFE-004 | tool workers, `src/tool_execution.py`, subprocess/file/MCP managers, container/sandbox config | High | XL | Secret exfiltration, traversal/symlink/race, network/process/resource escape, malicious MCP, timeout/kill. | Secrets/control-plane data are inaccessible; policy-approved workspace operations still work; all denied attempts and outputs are safely audited/redacted. |
 | SAFE-009 | Harden prompt-injection boundaries and secret-safe context/logging across providers and tools. | SAFE-003, SAFE-004 | `src/prompt_security.py`, context builders, email/web/RAG/file adapters, logging/redaction | High | L | OWASP-style indirect injection suite, encoded instructions, tool-output injection, secret canaries, log/API/DOM scan. | Untrusted content cannot alter policy or invoke tools; secrets never enter model context/output/logs; security events are visible without sensitive payloads. |
 | SAFE-010 | Make incognito genuinely non-persistent and remove raw chain-of-thought from API, DOM, storage, logs, and exports. | SAFE-005 | chat/session models/services, stream parser, `static/js/chat.js`, exports/backups | High | M | SQLite/vector/log/backup/crash residue and multiple thinking syntaxes/browser DOM tests. | Incognito leaves no durable derivative; users see concise rationale/action status only; hidden reasoning is never exposed or retained. |
+
+### SAFE-002 checkpoint B progress and remaining work
+
+Checkpoint B is a compatibility and validation milestone, not completion of SAFE-002 or SAFE-004.
+
+Implemented:
+
+- Immutable, validation-backed inventory of all **77** static built-in tool identities.
+- **12 typed/classified** definitions and an explicit frozen set of **65 `legacy_unclassified`** definitions with fail-closed registry metadata.
+- Pure, handler-free `tool_schema_catalog` split and thin `tool_schemas` compatibility facade.
+- Frozen **23-name plan compatibility allowlist** and exact **54-name canonical deny projection**, including `edit_file` and the three internal vault tools.
+- Canonical static policy identities plus the separately declared dynamic native name `builtin_browser`.
+- Interim non-admin block for `tail_serve_output`.
+- Focused evidence recorded in sequence: **37 passed** earlier, **28 passed** for the immutable contract suite, **62 passed** in an earlier combined gate, then **77 passed, 1 warning** in the latest expanded gate.
+- Final-state restricted full-suite evidence: **4,558 passed, 3 skipped, 20 failed, 8 warnings in 132.80 seconds**. All 20 failures are the same sandbox-denied loopback TCP, Unix-socket, or DNS cases; no registry/policy failure occurred.
+- The socket-enabled rerun could not start because escalation hit the account usage limit until **2026-07-25**. Checkpoint A's prior 4,538-pass socket-enabled run covers only the earlier code and cannot qualify checkpoint B.
+
+Remaining before SAFE-002 can be accepted:
+
+1. Connect registry permissions, risk, confirmation, timeout, retry, idempotency, compensation, audit, and verification metadata to the runtime executor/policy boundary. Current values are metadata/projections only.
+2. Classify all 65 legacy records. The immediate compatibility debt includes the 16 plan-allowed unclassified reads: `ask_teacher`, `chat_with_model`, `list_cached_models`, `list_cookbook_servers`, `list_downloads`, `list_email_accounts`, `list_emails`, `list_models`, `list_serve_presets`, `list_served_models`, `list_sessions`, `read_email`, `resolve_contact`, `search_chats`, `search_emails`, and `search_hf_models`.
+3. Generate native schema, prompt/index/UI, binding, audit, and MCP policy views from validated definitions without expanding existing model exposure.
+4. Add `tail_serve_output` caller ownership and fresh-launch sequence enforcement; its current non-admin gate is only interim.
+5. Fix and regression-test OM-BUG-031 through OM-BUG-034: broken/unbound plan updates, mutating background-job reads, stale native-to-MCP routes, and dropped timeout error text. Close the older OM-BUG-023 timeout drift at runtime.
+6. Complete the socket-enabled full rerun, then startup, browser, container, and release gates. The restricted run's 20 environment-only failures are understood but are not a passing full-suite gate.
 
 ## Milestone 4 — Google productivity foundation
 
@@ -99,14 +124,16 @@ Complexity estimates are relative engineering sizes: **S** (small, focused), **M
 | PROD-006 | Complete developer, user, admin, API/webhook, migration, deployment, security, and supported-platform documentation. | All preceding designs | `docs/om-automate/**`, README/source notices | Medium | L | Follow docs from clean environment; link/code sample/API schema checks; operator tabletop. | Another developer can install, operate, secure, back up, restore, update, extend, and troubleshoot without undocumented knowledge. |
 | PROD-007 | Run the full release qualification: security/threat review, dependency scan, migrations, backup/restore, all E2E journeys, performance/reliability, platform installers, and legal artifact review. | All milestone items | Entire repository and built artifacts | High | XL | Definition-of-Done matrix and signed evidence bundle. | All required suites and manual gates pass; no open Critical/High issue; supported limits are explicit; exact source/artifacts are tagged; rollback works. |
 
-## Immediate implementation slice
+## Current implementation slice
 
-The first product-code slice is `SAFE-001` plus the minimum of `SAFE-002` needed to give cancellation a canonical tool-execution lifecycle. It is intentionally ahead of rebranding and new provider work because the baseline can currently hide a still-running side effect after the user presses Stop. The slice must include:
+SAFE-001 local child ownership/UI state and SAFE-002 checkpoint B's immutable metadata/projection foundation are implemented. Neither item is complete at the system boundary: remote-effect cancellation/readback remains, and registry policy is not yet runtime authority.
 
-1. A failing in-flight tool cancellation regression.
-2. An ADR for action lifecycle/cancellation ownership.
-3. Structured cancellation propagation and child cleanup.
-4. A persisted or auditable truthful terminal result for any partial effect that can be read back.
-5. Focused, related, full-suite, startup, and browser Stop verification.
+The next bounded slice is:
+
+1. Repair OM-BUG-031 through OM-BUG-034 and pin their live execution/UI paths with regressions.
+2. Add owned launch records and owner/fresh-launch checks for `tail_serve_output`.
+3. Classify the 16 plan-compatible legacy reads, preserving the frozen 23/54 projection until operation-level policy replaces it.
+4. Make the executor consume registry timeout and policy decisions through a deny-by-default seam, without yet migrating mixed `manage_*` actions wholesale.
+5. Re-run focused, related, full-suite, startup, browser, and applicable container gates before the next checkpoint.
 
 No new effectful tool should be added until `SAFE-002` through `SAFE-007` are complete.

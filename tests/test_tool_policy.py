@@ -10,8 +10,15 @@ from src.tool_policy import (
     WEB_TOOL_NAMES,
     build_effective_tool_policy,
     detect_guide_only_turn,
+    known_tool_names,
     web_search_enabled_for_turn,
 )
+
+
+def test_known_tool_names_are_registry_identity_plus_dynamic_browser():
+    from src.tool_registry import BUILTIN_TOOL_NAMES
+
+    assert known_tool_names() == set(BUILTIN_TOOL_NAMES) | {"builtin_browser"}
 
 
 def _collect(gen):

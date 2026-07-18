@@ -3115,10 +3115,11 @@ async def stream_agent_loop(
         )
     if plan_mode and not guide_only:
         # Steer the model to investigate-then-propose. Hard tool gating handles
-        # every write path except shell; this directive is what keeps the
-        # intentionally-allowed bash/python read-only, so it must DOMINATE. Put
-        # it at the very TOP of the system prompt (the base prompt is large and
-        # action-oriented — appending buried it, and small models ignored it).
+        # the complete canonical static deny projection, including bash and
+        # Python. The directive still explains the interaction contract and must
+        # DOMINATE, so put it at the very TOP of the system prompt (the base
+        # prompt is large and action-oriented — appending buried it, and small
+        # models ignored it).
         if messages and messages[0].get("role") == "system":
             messages[0]["content"] = PLAN_MODE_DIRECTIVE + "\n\n" + (messages[0].get("content") or "")
         else:

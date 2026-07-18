@@ -410,3 +410,103 @@ Add the immutable registry contract and frozen golden inventory. Classify the co
 ### Manual action required from the user
 
 - None for this slice. Docker Desktop is still required later for the container launch gate.
+
+## 2026-07-18 — SAFE-002 inspection B: immutable definition contract and frozen migration debt
+
+### Current behaviour
+
+- The first registry slice now owns all 77 known built-in identities and intentionally separates 74 model-fence names from three internal-only vault executors.
+- Registry records do not yet express schemas, granular permissions, effective risk/confirmation, retry/idempotency, compensation, audit/redaction, verification, examples, presentation, or binding type.
+- The 67 native input schemas remain a compatibility list; seven fence/MCP tools and three internal vault capabilities require deliberate schema/exposure records.
+- There is no machine-enforced distinction between a new fully classified definition and historical unclassified migration debt.
+
+### Proposed change
+
+- Add frozen enums/value records for surfaces, migration state, risk, confirmation, retry, idempotency, audit, verification, presentation, and complete `ToolDefinition` metadata.
+- Add a deterministic `ToolRegistry` that rejects duplicate names/aliases, malformed names/schemas, missing bindings, invalid timeouts/retries, and unsafe confirmation/idempotency combinations.
+- Introduce an explicit, test-pinned legacy-debt allowlist. Unclassified records resolve fail-closed and the allowlist may shrink but cannot silently grow.
+- Materialize all 77 current names as registry records without changing their existing exposure. Classify the first simple core/filesystem/shell operations individually; leave mixed wrappers visibly unclassified until action-level policy is designed.
+
+### Files likely affected
+
+- `src/tool_registry.py` and possibly a separate catalog module if data size warrants it.
+- `tests/test_tool_registry_contract.py` and `tests/test_tool_registry_foundation.py`.
+- ADR/status/agent architecture and bug/backlog records.
+
+### Risks
+
+- Deep immutability must not make compatibility JSON-schema serialization invalid.
+- Lazy schema assembly must not recreate the repaired import cycle.
+- Auto-generated descriptions/examples must not disguise missing policy or grant a new native/fence surface.
+- Static validation cannot classify mixed `manage_*` actions safely; unknown operations must remain Level 3/always-confirmed once enforcement is connected.
+- A registry that is not yet used by the executor must not be represented as permission, approval, timeout, audit, or verification enforcement.
+
+### Tests required
+
+- Records and nested schema/policy data are immutable.
+- Duplicate names, aliases, name/alias collisions, invalid names, reserved dynamic namespace collisions, non-object schemas, missing fields/bindings, invalid timeout/retry combinations, and confirmation/risk violations are rejected.
+- Exact golden inventory contains 77 identities, with vault tools internal-only and every legacy name explicitly accounted for.
+- Surface projections preserve the current native/fence/internal boundaries and do not expose missing-schema or vault tools accidentally.
+- New unclassified records outside the frozen debt allowlist fail validation; strict validation continues to fail until debt reaches zero.
+- Focused registry tests, all existing schema/parser/policy tests, full suite, fresh startup, and browser smoke remain green.
+
+## 2026-07-18 — SAFE-002 checkpoint B: immutable registry metadata and canonical projections
+
+### Work completed
+
+- Added an immutable `ToolDefinition`/`ToolRegistry` contract and frozen supporting records for surfaces, migration state, risk, confirmation, retry, idempotency, audit, verification, presentation, schemas, examples, and lazy bindings.
+- Froze the complete built-in inventory at **77 canonical identities**. Exactly **12** simple operations are typed/classified; the remaining **65** are explicit `legacy_unclassified` debt with fail-closed registry metadata: Level 3, always-confirmed, no retry, no idempotency assumption, indeterminate verification, and manual reconciliation.
+- Split native schema data/conversion into the pure, handler-free `src/tool_schema_catalog.py`. `src/tool_schemas.py` is now a thin compatibility facade, preserving existing imports without recreating the repaired tool-module cycle.
+- Froze the plan-mode compatibility allowlist at exactly **23 names** and derive its denylist as the exact **54-name** complement of the canonical inventory. The deny projection includes `edit_file`, `vault_search`, `vault_get`, and `vault_unlock` and therefore cannot omit them through schema-import fallback.
+- Made `src/tool_policy.py` consume canonical static identities and add only the separately declared dynamic native capability `builtin_browser`.
+- Added `tail_serve_output` to the coarse non-administrator blocklist as an interim gate while operation ownership is still being designed.
+
+### Frozen plan-mode compatibility allowlist
+
+```text
+ask_teacher              chat_with_model          get_workspace
+glob                     grep                     list_cached_models
+list_cookbook_servers    list_downloads           list_email_accounts
+list_emails              list_models              list_serve_presets
+list_served_models       list_sessions            ls
+read_email               read_file                resolve_contact
+search_chats             search_emails            search_hf_models
+web_fetch                web_search
+```
+
+`plan_mode_disabled_tools()` is `BUILTIN_TOOL_NAMES - PLAN_MODE_ALLOWED_TOOL_NAMES`: 54 canonical names. This is a frozen compatibility projection, not an inference from risk metadata.
+
+### Focused verification recorded
+
+- Earlier registry/policy characterization: **37 passed**.
+- New immutable contract suite: **28 passed**.
+- Earlier combined focused checkpoint gate: **62 passed**.
+- Latest expanded focused gate: **77 passed, 1 warning**.
+- Final-state restricted full suite: **4,558 passed, 3 skipped, 20 failed, 8 warnings in 132.80 seconds**. All 20 failures require loopback TCP, overlong/forbidden Unix-socket creation, or DNS access denied by the restricted sandbox; no registry/policy assertion failed.
+- The required socket-enabled rerun could not start because the escalation request hit the account usage limit until **2026-07-25**. Do not treat the restricted run as a full pass.
+- Checkpoint A's earlier socket-enabled **4,538 passed, 3 skipped** result remains valid for its prior code only; it is not release evidence for checkpoint B.
+- Checkpoint B therefore does not claim a passing full-suite, startup, browser, container, or release qualification gate.
+
+### Scope boundary and remaining debt
+
+- Checkpoint B implements **registry metadata, validation, and compatibility projections only**. The executor does not yet consume registry permissions, approvals, risk decisions, timeouts, retries, idempotency, compensation, audit, or verification as runtime enforcement.
+- **16 of the 23 plan-allowed tools remain `legacy_unclassified` compatibility debt:** `ask_teacher`, `chat_with_model`, `list_cached_models`, `list_cookbook_servers`, `list_downloads`, `list_email_accounts`, `list_emails`, `list_models`, `list_serve_presets`, `list_served_models`, `list_sessions`, `read_email`, `resolve_contact`, `search_chats`, `search_emails`, and `search_hf_models`.
+- The `tail_serve_output` gate blocks non-administrators, but the tool still does not prove that the requested session belongs to the caller or that it is the fresh failed launch produced by the required `serve_model` → `list_served_models` sequence.
+- Runtime schemas, handlers, prompt/index/UI presentation, MCP discovery, and the legacy dispatcher are not yet all generated from the registry.
+
+### Bugs discovered or updated
+
+- OM-BUG-009 remains partially open: registry identity/import drift is repaired and the immutable catalog exists, but runtime consumers and `tail_serve_output` ownership/launch-sequence enforcement are incomplete.
+- OM-BUG-023 remains open: bash/Python metadata records 3,600-second timeouts, the prompt promises 60 seconds, compatibility constants say 60/30 seconds, and the worker still independently enforces 3,600 seconds.
+- OM-BUG-031: `update_plan` emits an event without checking for an active plan, while `static/js/chat.js` calls the undefined `_setStoredPlan`; the advertised no-active-plan no-op is not implemented.
+- OM-BUG-032: nominal `manage_bg_jobs` list/output reads invoke global `bg_jobs.refresh()`, which can kill timed-out jobs and prune records/files across all sessions before session filtering.
+- OM-BUG-033: `_MCP_TOOL_MAP` still routes bash, Python, filesystem, and web tools through removed built-in MCP server IDs before falling back to native handlers.
+- OM-BUG-034: `format_tool_result()` selects the `stdout` branch for timeout results and drops their `error` field, so the LLM can receive only exit code 124 rather than the timeout reason.
+
+### Next recommended task
+
+Connect registry policy to a deny-by-default operation-level runtime decision without broadening authority. First repair the four newly recorded execution/presentation defects, add owner and launch-sequence enforcement to `tail_serve_output`, classify the 16 plan-compatible reads, and make timeout/formatter behavior contract-tested before migrating mixed `manage_*` actions.
+
+### Manual action required from the user
+
+- None for this metadata/projection checkpoint.
