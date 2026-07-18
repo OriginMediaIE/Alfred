@@ -25,6 +25,7 @@ from src.settings import get_setting
 from src.prompt_security import untrusted_context_message
 from src.tool_security import blocked_tools_for_owner, plan_mode_disabled_tools
 from src.tool_policy import GUIDE_ONLY_DIRECTIVE, WEB_TOOL_NAMES, ToolPolicy
+from src.tool_run_lifecycle import CancellableToolRun
 from src.tool_utils import _truncate, get_mcp_manager
 from src.agent_tools import (
     parse_tool_blocks,
@@ -3989,40 +3990,31 @@ async def stream_agent_loop(
                 )
 
                 # Streaming progress for long-running tools (bash, python).
-                # The bash/python branches inside _direct_fallback emit
-                # periodic {elapsed_s, tail} payloads via this callback;
-                # we forward each one as a `tool_progress` SSE event so
-                # the UI can render live elapsed-time + tail-of-output.
-                _progress_q: asyncio.Queue = asyncio.Queue()
-                async def _push_progress(payload):
-                    await _progress_q.put(payload)
-
-                async def _run_tool():
-                    try:
-                        return await execute_tool_block(
-                            block,
-                            session_id=session_id,
-                            disabled_tools=disabled_tools,
-                            tool_policy=tool_policy,
-                            owner=owner,
-                            progress_cb=_push_progress,
-                            workspace=workspace,
-                        )
-                    finally:
-                        # Sentinel so the drainer knows to stop.
-                        await _progress_q.put(None)
-
-                _tool_task = asyncio.create_task(_run_tool())
-                # Drain progress events as they arrive — block until the
-                # next event OR the tool finishes (sentinel = None).
-                while True:
-                    evt = await _progress_q.get()
-                    if evt is None:
-                        break
-                    yield (
-                        f'data: {json.dumps({"type": "tool_progress", "tool": block.tool_type, "round": round_num, **evt})}\n\n'
+                # CancellableToolRun owns the child task so stopping the outer
+                # agent generator cannot leave the tool running after the UI
+                # has settled.  Closing an SSE subscriber alone does not close
+                # this generator; only the explicit detached-run Stop path (or
+                # another real outer failure) reaches the finally below.
+                async def _run_tool(progress_cb):
+                    return await execute_tool_block(
+                        block,
+                        session_id=session_id,
+                        disabled_tools=disabled_tools,
+                        tool_policy=tool_policy,
+                        owner=owner,
+                        progress_cb=progress_cb,
+                        workspace=workspace,
                     )
-                desc, result = await _tool_task
+
+                _tool_run = CancellableToolRun(_run_tool)
+                try:
+                    async for evt in _tool_run.progress():
+                        yield (
+                            f'data: {json.dumps({"type": "tool_progress", "tool": block.tool_type, "round": round_num, **evt})}\n\n'
+                        )
+                    desc, result = await _tool_run.result()
+                finally:
+                    await _tool_run.close()
 
             # A skill the model just loaded can prescribe tools that weren't
             # RAG-selected this turn (declared via requires_toolsets in its
