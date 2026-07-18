@@ -297,3 +297,116 @@ Create ADR-0002 and implement SAFE-002: an acyclic typed canonical tool registry
 ### Manual action required from the user
 
 - None for this checkpoint. Docker Desktop still needs to be started before the full container runtime gate.
+
+## 2026-07-18 — SAFE-002 inspection: canonical typed tool registry
+
+### Current behaviour
+
+- Built-in capability metadata is split across five independent sources: 67 native schemas, 73 executable fence tags, 31 registry handlers, 58 prompt sections, and 69 retrieval descriptions. Their union contains 74 names, while only 27 occur in every source.
+- `tail_serve_output` is advertised as a native function and has a legacy dispatcher branch, but is absent from `TOOL_TAGS`; native conversion therefore logs `Unknown function call` and returns `None`.
+- Seven executable tags have no native input schema: `ai_draft_email_reply`, `download_attachment`, `draft_email`, `draft_email_reply`, `generate_image`, `manage_research`, and `search_emails`.
+- A fresh interpreter cannot import `src.tool_schemas`; `tool_schemas → agent_tools → tool_schemas` fails on a partially initialized module. Security and execution code contain import-order workarounds for the same cycle.
+- Permission, risk, confirmation, timeout, retry, idempotency, reversibility, compensation, audit, verification, and presentation rules are not represented by one validated contract.
+
+### Proposed change
+
+- Add an acyclic, dependency-light registry contract with immutable typed definitions and explicit risk, permission, confirmation, retry, timeout, idempotency, reversibility, compensation, audit, verification, and presentation metadata.
+- Move shared tool identity primitives out of the `agent_tools` facade, generate compatibility exports from the canonical registry, and reject duplicate or incomplete definitions during validation.
+- Preserve all existing call formats and dispatch behavior while migrating incrementally; first repair cold imports, registry drift, and `tail_serve_output`, then route remaining schema/index/policy/handler consumers through generated views.
+- Keep MCP-discovered tools in a separately validated dynamic namespace rather than pretending they are static built-ins.
+
+### Files likely affected
+
+- New `src/tool_registry.py` and registry metadata modules if separation is needed.
+- `src/agent_tools/__init__.py`, `src/tool_schemas.py`, `src/tool_parsing.py`, `src/tool_index.py`, `src/tool_security.py`, `src/tool_execution.py`, and `src/agent_loop.py` compatibility consumers.
+- New focused registry contract/import/parity tests, plus existing tool parsing, policy, schema, execution, and agent tests.
+- `docs/om-automate/decisions/ADR-0002-canonical-tool-registry.md` and registry/security/architecture records.
+
+### Risks
+
+- Changing import direction can break application startup or tests that depend on historical facade import order.
+- Treating every fence tag as a native function without a deliberate exposure flag could expand model authority.
+- Incorrect conservative risk/permission defaults could allow a consequential action or block existing safe reads.
+- Eagerly importing tool implementations into the registry could recreate cycles and trigger heavyweight provider side effects.
+- A big-bang dispatcher rewrite could change owner/session/workspace/progress propagation.
+
+### Tests required
+
+- Reproduce the cold-import failure and `tail_serve_output` conversion failure before implementation, then make both green.
+- Validate uniqueness, immutability, required metadata, four-level risk classification, confirmation invariants, positive finite timeouts, bounded retry policy, schemas, audit/verification fields, and known handler routes.
+- Assert every built-in executable name has exactly one canonical definition and compatibility views have no orphan names.
+- Preserve unknown/malformed-call rejection, email aliases, plan-mode fail-closed behavior, tool parsing/stripping, native schema filtering, handler owner/session propagation, and MCP namespace behavior.
+- Run formatter/lint/type checks available in the repository, focused and related suites, the full suite, fresh application startup, and a browser smoke before checkpointing.
+
+## 2026-07-18 — SAFE-002 checkpoint A: acyclic tool identity and reachable cookbook diagnostics
+
+### Work completed
+
+- Added dependency-free `ToolBlock` ownership in `src/tool_types.py`.
+- Moved the canonical built-in fence/email/internal-only name inventory into the side-effect-free `src/tool_registry.py` foundation and retained facade re-exports.
+- Kept `vault_search`, `vault_get`, and `vault_unlock` explicitly inventory-visible but internal-only; they were not exposed to models merely to equalize set counts.
+- Added the omitted `tail_serve_output` fence surface. Native conversion and fenced parsing now reach its existing executor.
+- Removed the `tool_schemas/tool_parsing → agent_tools facade → tool_schemas/tool_parsing` import cycle. Both low-level modules now cold-import in independent interpreters.
+- Moved the built-in email-name source into the dependency-light catalog and made server-side security import that source.
+- Accepted ADR-0002, which separates definitions, surfaces, effective operation policy, and lazy runtime binding and forbids permissive defaults for unclassified tools.
+- Added current-state migration, user, and administrator guides with explicit target/not-yet-implemented labels.
+
+### Files changed
+
+- `src/tool_types.py`
+- `src/tool_registry.py`
+- `src/agent_tools/__init__.py`
+- `src/tool_parsing.py`
+- `src/tool_schemas.py`
+- `src/tool_security.py`
+- `tests/test_tool_registry_foundation.py`
+- `docs/om-automate/00-project-status.md`
+- `docs/om-automate/11-migration-guide.md`
+- `docs/om-automate/12-user-guide.md`
+- `docs/om-automate/13-admin-guide.md`
+- `docs/om-automate/decisions/ADR-0002-canonical-tool-registry.md`
+
+### Tests run
+
+- Red characterization: three expected failures reproduced both cold-import cycles and the missing `tail_serve_output` tag.
+- Green focused characterization: 3 passed.
+- Related schema/parser/fence/email/policy/workspace/agent/task tests: 168 passed.
+- First complete run inside the restricted sandbox: 4,518 passed, 3 skipped, 20 failed, 8 warnings. Every failure required a forbidden loopback socket bind or DNS resolution; no registry assertion failed.
+- Identical complete run with loopback socket/DNS access: 4,538 passed, 3 skipped, 8 warnings in 136.04 seconds.
+- Fresh native Uvicorn restart from the changed import graph.
+- Authenticated in-app browser reload and DOM smoke of the existing conversation/composer/tool controls.
+- Live `/api/health` probe after restart.
+
+### Tests passed
+
+- Final release gate for this slice: **4,538 passed, 3 expected skips, 8 tracked warnings**, exit 0.
+- Native startup completed and all four available bundled MCP servers connected.
+- Browser remained authenticated and rendered the chat application after reload.
+- Live liveness returned HTTP 200 with `status=healthy`.
+
+### Tests failed
+
+- The three initial red tests failed exactly as intended before implementation.
+- The sandboxed full run produced 20 environment-only networking failures; the required socket/DNS-enabled rerun passed every test without code changes.
+- No product/test failure remains in the final gate.
+
+### Bugs discovered or updated
+
+- OM-BUG-009 is fixed for the confirmed `tail_serve_output` ingress defect and low-level cold imports. The larger metadata/handler/policy/UI drift remains open until all compatibility views are generated from typed definitions.
+- The static executor contains three previously uncounted vault capabilities. They are now accounted for as internal-only registry debt rather than silently advertised.
+- Plan-mode fallback omits `edit_file` when schema loading fails, timeout promises disagree with runtime enforcement, and static admin UI metadata contains stale `manage_rag`; these move into the next registry-policy slices.
+
+### Open risks
+
+- `src/tool_registry.py` currently owns identity/surfaces only. Immutable typed definitions, strict validation, operation-level policy, handler binding, output schemas, timeout/retry enforcement, and generated UI/index/prompt views are not implemented yet.
+- The remaining broad `manage_*` tools require validated action-specific policy; a blanket risk classification would be unsafe.
+- Dynamic MCP tools still enter without the required OM permission/risk/audit/verification overlay.
+- The known MCP cancel-scope warnings remain on shutdown; Chroma/SearXNG/ntfy and Docker runtime remain unavailable in the current native environment.
+
+### Next recommended task
+
+Add the immutable registry contract and frozen golden inventory. Classify the core/filesystem/shell domain first, make every unclassified legacy capability explicit and fail-closed, then derive plan-mode and runtime timeout policy from those definitions before migrating broader personal-data/provider domains.
+
+### Manual action required from the user
+
+- None for this slice. Docker Desktop is still required later for the container launch gate.

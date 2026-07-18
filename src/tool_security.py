@@ -5,31 +5,9 @@ from __future__ import annotations
 import logging
 from typing import Optional, Set
 
+from src.tool_registry import BUILTIN_EMAIL_TOOLS
+
 logger = logging.getLogger(__name__)
-
-
-# Every tool exposed by the built-in email MCP server
-# (mcp_servers/email_server.py). Single source of truth: the fence tags
-# (TOOL_TAGS), bare-name dispatch (tool_execution), native-call mapping
-# (tool_schemas), and the non-admin blocklist below all derive from this set,
-# so a tool added to the email server can't become reachable under its bare
-# name without also being blocked for non-admins.
-BUILTIN_EMAIL_TOOLS = frozenset({
-    "list_email_accounts",
-    "list_emails",
-    "read_email",
-    "search_emails",
-    "send_email",
-    "reply_to_email",
-    "draft_email",
-    "draft_email_reply",
-    "ai_draft_email_reply",
-    "archive_email",
-    "delete_email",
-    "mark_email_read",
-    "bulk_email",
-    "download_attachment",
-})
 
 
 # Tools regular/public users must not execute directly. These either expose
