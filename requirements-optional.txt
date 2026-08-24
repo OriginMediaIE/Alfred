@@ -3,6 +3,11 @@
 #
 # Note: chromadb-client + fastembed moved to requirements.txt — RAG, semantic
 # memory, and tool selection are core paths, so they ship by default now.
+#
+# Note: mlx-lm moved to requirements.txt / requirements-om.lock because the
+# Apple Silicon Cookbook MLX backend launches from the OM Automate app venv.
+# Installing it elsewhere can make the Dependency button report success while
+# `python -m mlx_lm.server` still fails at serve time.
 
 # Local speech-to-text (microphone -> text) via faster-whisper, for the
 # "local" STT provider. Runs on CPU out of the box (CTranslate2 backend, no

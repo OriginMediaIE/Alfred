@@ -42,6 +42,7 @@ loguru==0.7.3
 lxml==6.1.1
 Markdown==3.10.2
 mcp==1.28.1
+mlx-lm==0.31.3 ; sys_platform == "darwin" and platform_machine == "arm64"
 mmh3==5.2.1
 nh3==0.3.6
 niquests==3.20.1

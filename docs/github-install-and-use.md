@@ -582,6 +582,24 @@ Check:
 
 For Docker installs, the default setup starts SearXNG for you.
 
+### Apfel Is Not Installed
+
+Apfel is a separate Apple Silicon helper installed with Homebrew, not a Python
+package.
+
+On an Apple Silicon Mac, run:
+
+```bash
+brew install apfel
+```
+
+What this means:
+
+- Apfel lets OM Automate use Apple's local Foundational Models through an
+  OpenAI-compatible local server.
+- Cookbook still works without Apfel, but some Apple-local model options may be
+  limited.
+
 ## Safety Notes
 
 - Keep `.env` private.

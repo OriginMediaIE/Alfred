@@ -181,6 +181,26 @@ function _mlxLmInstallCommand(panel) {
   return `${_pythonForDiagnosisPanel(panel)} -m pip install -U mlx-lm`;
 }
 
+function _dependencyTaskMeta(task) {
+  if (!task) return null;
+  const payload = task.payload || {};
+  const envPath = payload._envPath || payload.env_path || '';
+  const env = payload._env || '';
+  return {
+    serverKey: task.remoteServerKey || task.remoteHost || '',
+    serverName: task.remoteServerName || task.remoteHost || '',
+    remote_server_key: task.remoteServerKey || '',
+    remote_server_name: task.remoteServerName || '',
+    remote_host: task.remoteHost || '',
+    ssh_port: task.sshPort || '',
+    platform: task.platform || payload.platform || '',
+    env_path: envPath,
+    _envPath: envPath,
+    _env: env,
+    _dep: true,
+  };
+}
+
 async function _repairSglangKernel(panel) {
   const task = _taskForDiagnosisPanel(panel);
   uiModule.showToast('Repairing sglang-kernel on the selected server...');
@@ -190,10 +210,7 @@ async function _repairSglangKernel(panel) {
     _sglangKernelRepairCommand(panel),
     null,
     task?.remoteHost || undefined,
-    task ? {
-      serverKey: task.remoteServerKey || task.remoteHost || '',
-      serverName: task.remoteServerName || task.remoteHost || '',
-    } : null,
+    _dependencyTaskMeta(task),
   );
 }
 
@@ -206,15 +223,8 @@ async function _installMlxLm(panel) {
     _mlxLmInstallCommand(panel),
     null,
     task?.remoteHost || undefined,
-    _diagnosisTargetMeta(task),
+    _dependencyTaskMeta(task),
   );
-}
-
-function _diagnosisTargetMeta(task) {
-  return task ? {
-    serverKey: task.remoteServerKey || task.remoteHost || '',
-    serverName: task.remoteServerName || task.remoteHost || '',
-  } : null;
 }
 
 function _gpuCleanupCommand() {
