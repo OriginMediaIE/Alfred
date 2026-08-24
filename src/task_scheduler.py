@@ -23,14 +23,10 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-# Shell/file tools a scheduled task's agent should be offered by default,
-# mirroring the chat agent (where these are on unless a privilege or global
-# setting turns them off). The RAG tool selector + ASSISTANT_ALWAYS_AVAILABLE
-# never include bash/python, so on a host with an empty/degraded tool-embedding
-# index a task could not run shell or Python even for an admin owner. Offering
-# them here is safe: stream_agent_loop's blocked_tools_for_owner() still strips
-# this whole group for non-admin multi-user owners, and only admits it for
-# admins and single-user (AUTH_ENABLED=false) deployments.
+# Shell/file tools are never implicit for scheduled agents. A crew must name
+# them in its explicit enabled_tools allowlist and the owner must separately
+# hold the shell privilege. This prevents unattended prompts or imported task
+# content from gaining a raw execution path merely because the owner is admin.
 TASK_DEFAULT_SHELL_TOOLS = frozenset({
     "bash", "python", "read_file", "write_file", "edit_file",
     "grep", "glob", "ls", "get_workspace",
@@ -40,12 +36,10 @@ TASK_DEFAULT_SHELL_TOOLS = frozenset({
 def compose_task_relevant_tools(rag_tools, assistant_always, disabled_tools):
     """Compose the relevant-tools set offered to a scheduled task's agent.
 
-    Unions the RAG-retrieved tools, the assistant's always-available set, and
-    the default shell/file group, then removes anything the task's crew
-    explicitly disabled via its `enabled_tools` allowlist. Per-owner admin
-    gating is applied later by stream_agent_loop (blocked_tools_for_owner).
+    Shell/file names enter only when they were explicitly selected upstream;
+    the default deny set removes them from RAG selection and schemas.
     """
-    tools = set(rag_tools) | set(assistant_always) | set(TASK_DEFAULT_SHELL_TOOLS)
+    tools = set(rag_tools) | set(assistant_always)
     if disabled_tools:
         tools -= set(disabled_tools)
     return tools
@@ -331,8 +325,13 @@ def _normalize_chat_endpoint(url: str) -> str:
 
 
 class TaskScheduler:
-    def __init__(self, session_manager):
+    def __init__(self, session_manager, auth_manager=None):
         self._session_manager = session_manager
+        # The scheduler outlives individual requests, so keep the same
+        # application-owned auth snapshot provider used by interactive chat.
+        # Constructing AuthManager inside each tool call can reload/mutate auth
+        # state and makes one scheduled turn evaluate against mixed snapshots.
+        self._auth_manager = auth_manager
         self._running = False
         self._task = None
         self._executing = set()  # task IDs currently running OR queued behind the semaphore
@@ -850,7 +849,7 @@ class TaskScheduler:
             if gate_foreground:
                 waiting = db.query(TaskRun).filter(TaskRun.id == run_id).first()
                 if waiting and waiting.status == "queued":
-                    waiting.result = "Queued — waiting for Odysseus to be idle…"
+                    waiting.result = "Queued — waiting for OM Automate to be idle…"
                     db.commit()
                 from src.interactive_gate import wait_for_interactive_quiet
                 await wait_for_interactive_quiet(f"scheduled task {task.name}")
@@ -900,7 +899,7 @@ class TaskScheduler:
                         await asyncio.sleep(0.25)
                         if has_foreground_activity():
                             foreground_cancel["hit"] = True
-                            logger.info("Task '%s' interrupted because Odysseus became active", task.name)
+                            logger.info("Task '%s' interrupted because OM Automate became active", task.name)
                             if current_task:
                                 current_task.cancel()
                             return
@@ -946,7 +945,7 @@ class TaskScheduler:
                 return
             except asyncio.CancelledError:
                 msg = (
-                    "Paused because Odysseus became active"
+                    "Paused because OM Automate became active"
                     if foreground_cancel.get("hit")
                     else "Stopped by user"
                 )
@@ -1241,7 +1240,12 @@ class TaskScheduler:
             def _progress(message: str):
                 self._set_run_progress(run_id, message)
 
-            kwargs = {"owner": task.owner, "task_name": task.name, "progress_cb": _progress}
+            kwargs = {
+                "owner": task.owner,
+                "task_name": task.name,
+                "progress_cb": _progress,
+                "auth_manager": self._auth_manager,
+            }
             if task.prompt:
                 kwargs["prompt"] = task.prompt
             if task.action in ("run_script", "run_local", "ssh_command") and task.prompt:
@@ -1595,14 +1599,16 @@ class TaskScheduler:
         # or AUTH_ENABLED=false scheduled task would still see and call shell/
         # file tools after the operator disabled them globally, because the
         # prompt/schema/execution gates only enforce what is passed in.
-        disabled_tools: set[str] = set()
+        disabled_tools: set[str] = set(TASK_DEFAULT_SHELL_TOOLS)
+        explicitly_enabled_tools: set[str] = set()
         if crew and crew.enabled_tools:
             try:
                 enabled = json.loads(crew.enabled_tools)
                 if isinstance(enabled, list) and enabled:
                     from src.tool_index import BUILTIN_TOOL_DESCRIPTIONS
+                    explicitly_enabled_tools = {str(name) for name in enabled}
                     all_tools = set(BUILTIN_TOOL_DESCRIPTIONS.keys())
-                    disabled_tools |= all_tools - set(enabled)
+                    disabled_tools = all_tools - explicitly_enabled_tools
             except Exception:
                 pass
         try:
@@ -1620,11 +1626,12 @@ class TaskScheduler:
             from src.tool_index import get_tool_index, ASSISTANT_ALWAYS_AVAILABLE
             tool_idx = get_tool_index()
             if tool_idx:
-                rag_tools = tool_idx.get_tools_for_query(task.prompt or "", k=8)
+                rag_tools = set(tool_idx.get_tools_for_query(task.prompt or "", k=8))
+                rag_tools.update(explicitly_enabled_tools)
                 relevant_tools = compose_task_relevant_tools(
                     rag_tools, ASSISTANT_ALWAYS_AVAILABLE, disabled_tools
                 )
-                logger.info(f"[assistant] RAG selected {len(rag_tools)} tools + {len(ASSISTANT_ALWAYS_AVAILABLE)} always-available + shell/file defaults = {len(relevant_tools)} total for '{task.name}'")
+                logger.info(f"[assistant] selected {len(rag_tools)} relevant/explicit tools + {len(ASSISTANT_ALWAYS_AVAILABLE)} always-available = {len(relevant_tools)} total for '{task.name}'")
         except Exception as e:
             logger.warning(f"[assistant] RAG tool selection failed, using all: {e}")
 
@@ -1902,6 +1909,7 @@ class TaskScheduler:
             )[1:]
         except Exception:
             _task_fallbacks = []
+        from src.tool_authorization import ExecutionOrigin
         async for event_str in stream_agent_loop(
             endpoint_url=endpoint_url,
             model=model,
@@ -1914,6 +1922,8 @@ class TaskScheduler:
             relevant_tools=relevant_tools,
             fallbacks=_task_fallbacks,
             workload="background",
+            auth_manager=self._auth_manager,
+            execution_origin=ExecutionOrigin.SCHEDULED_AUTOMATION,
         ):
             if event_str.startswith("data: ") and not event_str.startswith("data: [DONE]"):
                 try:
@@ -2240,11 +2250,11 @@ class TaskScheduler:
         stopped = self._mark_run_aborted(task_id) or stopped
         return stopped
 
-    async def stop_background_tasks_for_foreground(self, *, reason: str = "Odysseus became active") -> int:
+    async def stop_background_tasks_for_foreground(self, *, reason: str = "OM Automate became active") -> int:
         """Cancel all in-process scheduler tasks because the user is active.
 
         This is intentionally blunt for scheduled/background work: when the
-        user opens or uses Odysseus, foreground interaction wins immediately.
+        user opens or uses OM Automate, foreground interaction wins immediately.
         Manual force-runs can be restarted by the user; automatic jobs will be
         deferred by their cancellation path instead of stealing the app.
         """

@@ -249,43 +249,73 @@ class UploadHandler:
         
         return True
     
-    def cleanup_old_uploads(self):
-        """Remove uploaded files older than CLEANUP_DAYS days."""
-        try:
-            cutoff_date = datetime.now() - timedelta(days=self.cleanup_days)
-            cleaned_count = 0
-            
-            for root, dirs, files in os.walk(self.upload_dir):
-                if root == self.upload_dir:
+    def cleanup_old_uploads(self, owner=None, retention_days=None):
+        """Purge indexed uploads according to owner-specific retention.
+
+        Metadata and bytes are removed together under the index lock. Unindexed
+        files are deliberately left alone: they may be recovery artifacts and
+        cannot safely be attributed to an owner.
+        """
+        uploads_db_path = os.path.join(self.upload_dir, "uploads.json")
+        cleaned_count = 0
+        now = datetime.now()
+        owner_key = None if owner is None else str(owner).strip().lower()
+        with self._index_lock:
+            current = dict(self._load_upload_index())
+            kept = {}
+            for key, raw_info in current.items():
+                if not isinstance(raw_info, dict):
+                    kept[key] = raw_info
                     continue
-                    
-                path_parts = root.split(os.sep)
-                if len(path_parts) >= 4:
+                info = dict(raw_info)
+                item_owner = info.get("owner")
+                normalized_owner = None if item_owner is None else str(item_owner).strip().lower()
+                if owner_key is not None and normalized_owner != owner_key:
+                    kept[key] = info
+                    continue
+                days = retention_days
+                if days is None:
                     try:
-                        dir_date = datetime(int(path_parts[-3]), int(path_parts[-2]), int(path_parts[-1]))
-                        if dir_date < cutoff_date:
-                            for file in files:
-                                file_path = os.path.join(root, file)
-                                try:
-                                    os.remove(file_path)
-                                    cleaned_count += 1
-                                    logger.info(f"Cleaned up old upload: {file_path}")
-                                except Exception as e:
-                                    logger.warning(f"Failed to remove {file_path}: {e}")
-                            
-                            try:
-                                os.rmdir(root)
-                                logger.info(f"Removed empty upload directory: {root}")
-                            except Exception as e:
-                                logger.warning(f"Failed to remove directory {root}: {e}")
-                    except (ValueError, IndexError):
-                        continue
-            
-            logger.info(f"Upload cleanup completed: {cleaned_count} files removed")
-            return cleaned_count
-        except Exception as e:
-            logger.error(f"Upload cleanup failed: {e}")
-            return 0
+                        from services.privacy_service import get_privacy_service
+                        days = get_privacy_service().get(item_owner).get("file_retention_days")
+                    except Exception:
+                        days = None
+                if days is None:
+                    kept[key] = info
+                    continue
+                raw_time = info.get("last_accessed") or info.get("uploaded_at")
+                try:
+                    touched = datetime.fromisoformat(str(raw_time).replace("Z", "+00:00"))
+                    if touched.tzinfo is not None:
+                        touched = touched.astimezone().replace(tzinfo=None)
+                except (TypeError, ValueError):
+                    kept[key] = info
+                    continue
+                if touched >= now - timedelta(days=int(days)):
+                    kept[key] = info
+                    continue
+                path = str(info.get("path") or "")
+                if not path or not self._inside_upload_dir(path) or os.path.islink(path):
+                    kept[key] = info
+                    continue
+                try:
+                    if os.path.isfile(path):
+                        os.remove(path)
+                    upload_id = str(info.get("id") or "")
+                    for derived in (
+                        os.path.join(self.upload_dir, ".thumbs", upload_id + ".jpg"),
+                        os.path.join(self.upload_dir, ".vision", upload_id + ".txt"),
+                    ):
+                        if self._inside_upload_dir(derived) and os.path.isfile(derived):
+                            os.remove(derived)
+                    cleaned_count += 1
+                except OSError as exc:
+                    logger.warning("Failed to purge expired upload %s: %s", path, exc)
+                    kept[key] = info
+            if kept != current:
+                self._atomic_write_json(uploads_db_path, kept)
+        logger.info("Upload retention purge removed %d files", cleaned_count)
+        return cleaned_count
     
     def validate_upload_id(self, upload_id: str) -> bool:
         """Validate that the upload ID matches the expected pattern."""

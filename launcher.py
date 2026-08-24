@@ -1,5 +1,5 @@
 # launcher.py
-"""Dedicated entrypoint for the standalone Windows portable launcher.
+"""Dedicated entrypoint for the standalone OM Automate launcher.
 
 Handles:
 - Immediate GUI splash screen creation using tkinter.
@@ -13,6 +13,61 @@ import sys
 import threading
 import time
 import webbrowser
+from pathlib import Path
+
+from src.branding import get_brand_config
+from src.constants import STATIC_DIR
+
+
+BRAND = get_brand_config()
+PRODUCT_NAME = BRAND.product_name
+LAUNCHER_LABEL = BRAND.native_labels["launcher"]
+
+
+def _brand_icon_path() -> Path:
+    """Resolve the validated public icon URL to its bundled filesystem path."""
+    public_path = BRAND.assets.apple_touch_icon
+    static_prefix = "/static/"
+    if not public_path.startswith(static_prefix):
+        raise ValueError("native icon must be served from /static/")
+    return Path(STATIC_DIR) / public_path.removeprefix(static_prefix)
+
+
+def create_tray_image(size: int = 64):
+    """Load the central OM icon, with a small geometric fallback for recovery."""
+    from PIL import Image, ImageDraw
+
+    try:
+        with Image.open(_brand_icon_path()) as source:
+            return source.convert("RGBA").resize((size, size), Image.Resampling.LANCZOS)
+    except (FileNotFoundError, OSError):
+        # Keep the launcher usable if a manually assembled portable bundle is
+        # missing its icon. The fallback is still the OM signal mark, not the
+        # retired legacy artwork.
+        background = BRAND.theme["background"]
+        accent = BRAND.theme["accent"]
+        signal = BRAND.theme["signal"]
+        image = Image.new("RGBA", (size, size), background)
+        draw = ImageDraw.Draw(image)
+        scale = size / 64
+        width = max(2, round(6 * scale))
+        draw.ellipse(
+            tuple(round(value * scale) for value in (8, 8, 56, 56)),
+            outline=accent,
+            width=width,
+        )
+        mark_points = ((23, 43), (23, 25), (32, 36), (41, 25), (41, 43))
+        draw.line(
+            [(round(x * scale), round(y * scale)) for x, y in mark_points],
+            fill=signal,
+            width=max(2, round(5 * scale)),
+            joint="curve",
+        )
+        draw.ellipse(
+            tuple(round(value * scale) for value in (46, 13, 54, 21)),
+            fill=signal,
+        )
+        return image
 
 # Define a dummy NullWriter to suppress standard stream crashes (isatty etc.) in GUI mode
 class NullWriter:
@@ -39,23 +94,66 @@ if getattr(sys, 'frozen', False):
         global splash_root
         try:
             splash_root = tk.Tk()
-            splash_root.title("Odysseus")
+            splash_root.title(PRODUCT_NAME)
             splash_root.overrideredirect(True)
-            splash_root.configure(bg="#1a1c23")
+            splash_root.configure(bg=BRAND.theme["background"])
 
             # Accented borders
-            splash_root.config(highlightbackground="#e06c75", highlightcolor="#e06c75", highlightthickness=1)
+            splash_root.config(
+                highlightbackground=BRAND.theme["accent"],
+                highlightcolor=BRAND.theme["accent"],
+                highlightthickness=1,
+            )
 
-            w, h = 360, 160
+            w, h = 390, 182
             ws = splash_root.winfo_screenwidth()
             hs = splash_root.winfo_screenheight()
             x = (ws - w) // 2
             y = (hs - h) // 2
             splash_root.geometry(f"{w}x{h}+{x}+{y}")
 
-            tk.Label(splash_root, text="⛵ Odysseus", font=("Segoe UI", 22, "bold"), bg="#1a1c23", fg="#e06c75").pack(pady=(22, 2))
-            tk.Label(splash_root, text="Launching background services...", font=("Segoe UI", 10), bg="#1a1c23", fg="#d1d4e0").pack(pady=2)
-            tk.Label(splash_root, text="Please wait, this will take a few seconds.", font=("Segoe UI", 8, "italic"), bg="#1a1c23", fg="#5c6370").pack(pady=(12, 0))
+            header = tk.Frame(splash_root, bg=BRAND.theme["background"])
+            header.pack(pady=(20, 3))
+            try:
+                from PIL import ImageTk
+
+                photo = ImageTk.PhotoImage(create_tray_image(48))
+                splash_root._om_brand_photo = photo
+                tk.Label(
+                    header,
+                    image=photo,
+                    bg=BRAND.theme["background"],
+                    borderwidth=0,
+                ).pack(side=tk.LEFT, padx=(0, 10))
+            except Exception:
+                tk.Label(
+                    header,
+                    text=BRAND.assistant_name,
+                    font=("Segoe UI", 18, "bold"),
+                    bg=BRAND.theme["background"],
+                    fg=BRAND.theme["signal"],
+                ).pack(side=tk.LEFT, padx=(0, 10))
+            tk.Label(
+                header,
+                text=PRODUCT_NAME,
+                font=("Segoe UI", 21, "bold"),
+                bg=BRAND.theme["background"],
+                fg=BRAND.theme["foreground"],
+            ).pack(side=tk.LEFT)
+            tk.Label(
+                splash_root,
+                text=BRAND.positioning,
+                font=("Segoe UI", 10),
+                bg=BRAND.theme["background"],
+                fg=BRAND.theme["accent"],
+            ).pack(pady=2)
+            tk.Label(
+                splash_root,
+                text="Launching private services…",
+                font=("Segoe UI", 8, "italic"),
+                bg=BRAND.theme["background"],
+                fg=BRAND.theme["foreground"],
+            ).pack(pady=(9, 0))
 
             splash_root.attributes("-topmost", True)
             splash_root.mainloop()
@@ -64,22 +162,6 @@ if getattr(sys, 'frozen', False):
 
     # Launch the GUI splash screen immediately on a background thread
     threading.Thread(target=show_splash_instantly, daemon=True).start()
-
-
-def create_tray_image():
-    # Generate a beautiful 64x64 icon matching Odysseus brand red accent (#e06c75)
-    from PIL import Image, ImageDraw
-    image = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
-    dc = ImageDraw.Draw(image)
-    accent_red = (224, 108, 117, 255)
-    light_red = (224, 108, 117, 150)
-
-    # Draw premium sailing boat
-    dc.polygon([(32, 10), (32, 45), (12, 45)], fill=accent_red)
-    dc.polygon([(32, 18), (32, 45), (48, 45)], fill=light_red)
-    dc.polygon([(8, 48), (56, 48), (44, 56), (20, 56)], fill=accent_red)
-    return image
-
 
 def on_open_browser(icon, item, url):
     webbrowser.open(url)
@@ -95,14 +177,14 @@ def setup_system_tray(url):
         import pystray
         icon_img = create_tray_image()
         menu = (
-            pystray.MenuItem('Open Odysseus', lambda icon, item: on_open_browser(icon, item, url), default=True),
-            pystray.MenuItem('Exit', on_exit)
+            pystray.MenuItem(LAUNCHER_LABEL, lambda icon, item: on_open_browser(icon, item, url), default=True),
+            pystray.MenuItem(f"Quit {PRODUCT_NAME}", on_exit),
         )
         tray_icon = pystray.Icon(
-            "Odysseus",
+            "om-automate",
             icon_img,
-            "Odysseus",
-            menu
+            PRODUCT_NAME,
+            menu,
         )
         tray_icon.run()
     except Exception:

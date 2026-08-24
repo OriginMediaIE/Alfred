@@ -224,11 +224,14 @@ async function streamToPane(paneIdx, sessionId, message, aiMsgEl, opts) {
     const isAgent = state._compareMode === 'agent';
     const isResearch = state._compareMode === 'research';
 
-    // Agent mode: enable all tools (web, bash, etc.)
+    // Agent mode enables web tools, but shell/file access still follows the
+    // user's explicit composer toggle. Entering Compare must not silently
+    // grant raw execution capability.
     if (isAgent) {
       fd.append('mode', 'agent');
       fd.append('allow_web_search', 'true');
-      fd.append('allow_bash', 'true');
+      const shellToggle = document.getElementById('bash-toggle');
+      fd.append('allow_bash', shellToggle && shellToggle.checked ? 'true' : 'false');
     } else if (isResearch) {
       fd.append('use_research', 'true');
     } else {

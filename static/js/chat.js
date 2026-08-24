@@ -125,12 +125,12 @@ import { settleCancelledToolNode } from './toolRunStatus.js';
     const tsSpan = roleEl.querySelector('.role-timestamp');
     const req = requestedModel || actualModel || '';
     const actual = actualModel || requestedModel || '';
-    let label = _modelRouteLabel(req, actual);
+    let label = window._omProviderRoutingVisible === false ? 'OM' : _modelRouteLabel(req, actual);
     if (opts.suffix) label += ' (' + opts.suffix + ')';
     if (opts.characterName) label = opts.characterName;
     roleEl.textContent = label + ' ';
-    _applyModelColor(roleEl, actual || req);
-    if (req && actual && !_sameModelName(req, actual)) {
+    if (window._omProviderRoutingVisible !== false) _applyModelColor(roleEl, actual || req);
+    if (window._omProviderRoutingVisible !== false && req && actual && !_sameModelName(req, actual)) {
       roleEl.title = req + ' -> ' + actual + (opts.reason ? ': ' + opts.reason : '');
     } else if (!opts.reason) {
       roleEl.removeAttribute('title');
@@ -1781,7 +1781,7 @@ import { settleCancelledToolNode } from './toolRunStatus.js';
                   accumulated = accumulated.replace(/<think>/i, '<think time="' + _elapsedDone + '">');
                   roundText = roundText.replace(/<think>/i, '<think time="' + _elapsedDone + '">');
                 }
-                if (_liveThinkHeader) _liveThinkHeader.textContent = 'View thinking process';
+                if (_liveThinkHeader) _liveThinkHeader.textContent = 'View reasoning summary';
                 if (_liveThinkSpinnerSlot) _liveThinkSpinnerSlot.remove();
                 if (_liveThinkTimerEl && _elapsedDone) {
                   _liveThinkTimerEl.textContent = _formatThinkStats(_elapsedDone, _liveThinkTokenCount);
@@ -2007,7 +2007,8 @@ import { settleCancelledToolNode } from './toolRunStatus.js';
                   }
                 } else if (hasUnclosedThink && isThinking) {
                   if (_liveThinkInner) {
-                    // Extract raw thinking text (strip known thinking wrappers and prefixes)
+                    // Count private reasoning for the timing indicator, but do
+                    // not put raw chain-of-thought into the DOM.
                     var thinkText = markdownModule.normalizeThinkingMarkup(_streamDisplayText(roundText))
                       .replace(/<\/?(?:think(?:ing)?|thought)(?:\s+[^>]*)?>/gi, '')
                       .replace(/<\|channel>thought\s*\n?/gi, '')
@@ -2015,7 +2016,7 @@ import { settleCancelledToolNode } from './toolRunStatus.js';
                       .replace(/<channel\|>/gi, '');
                     thinkText = thinkText.replace(/^\s*Thinking(?:\s+Process)?:\s*/i, '');
                     _liveThinkTokenCount = _estimateThinkingTokens(thinkText);
-                    _liveThinkInner.innerHTML = markdownModule.mdToHtml(thinkText);
+                    _liveThinkInner.textContent = 'Model reasoning is in progress. Private chain-of-thought is not displayed.';
                     if (_liveThinkTimerEl) {
                       var _elapsedLive = thinkingStartTime ? ((Date.now() - thinkingStartTime) / 1000).toFixed(1) : '';
                       _liveThinkTimerEl.textContent = _formatThinkStats(_elapsedLive, _liveThinkTokenCount);
@@ -2064,7 +2065,7 @@ import { settleCancelledToolNode } from './toolRunStatus.js';
                     accumulated = accumulated.replace(/<think>/i, '<think time="' + elapsed + '">');
                     roundText = roundText.replace(/<think>/i, '<think time="' + elapsed + '">');
                   }
-                  if (_liveThinkHeader) _liveThinkHeader.textContent = 'View thinking process';
+                  if (_liveThinkHeader) _liveThinkHeader.textContent = 'View reasoning summary';
                   if (_liveThinkSpinnerSlot) _liveThinkSpinnerSlot.remove();
                   // Move timer to right side of header
                   if (_liveThinkTimerEl && elapsed) {
@@ -2298,7 +2299,9 @@ import { settleCancelledToolNode } from './toolRunStatus.js';
                 if (!_isBg) {
                   var _selM = _shortModel(json.selected_model || '');
                   var _ansM = _shortModel(json.answered_by || '');
-                  uiModule.showToast('⚠ ' + _selM + ' failed — answered by ' + _ansM, 6000);
+                  uiModule.showToast(window._omProviderRoutingVisible === false
+                    ? '⚠ Selected model failed — a configured fallback answered'
+                    : '⚠ ' + _selM + ' failed — answered by ' + _ansM, 6000);
                   if (holder) {
                     var _rEl = holder.querySelector('.role');
                     if (_rEl) {
@@ -2480,7 +2483,7 @@ import { settleCancelledToolNode } from './toolRunStatus.js';
                   isThinking = false;
                   cancelAnimationFrame(_thinkTimerRAF);
                   var _elapsed2 = thinkingStartTime ? ((Date.now() - thinkingStartTime) / 1000).toFixed(1) : null;
-                  if (_liveThinkHeader) _liveThinkHeader.textContent = 'View thinking process';
+                  if (_liveThinkHeader) _liveThinkHeader.textContent = 'View reasoning summary';
                   if (_liveThinkTimerEl) _liveThinkTimerEl.textContent = _elapsed2 ? _formatThinkStats(_elapsed2, _liveThinkTokenCount) : '';
                   if (_liveThinkSpinnerSlot) _liveThinkSpinnerSlot.remove();
                   // Assign stable IDs
@@ -3456,7 +3459,7 @@ import { settleCancelledToolNode } from './toolRunStatus.js';
             if (_box && sessionModule.getCurrentSessionId() === _timeoutSessionId) {
               var _timeoutMsg = document.createElement('div');
               _timeoutMsg.className = 'msg msg-ai';
-              _timeoutMsg.innerHTML = '<div class="role">Odysseus</div><div class="body" style="opacity:0.6;font-style:italic;">Research clarification timed out. Toggle research again to start over.</div>';
+              _timeoutMsg.innerHTML = '<div class="role">OM</div><div class="body" style="opacity:0.6;font-style:italic;">Research clarification timed out. Toggle research again to start over.</div>';
               _box.appendChild(_timeoutMsg);
               uiModule.scrollHistory();
             }

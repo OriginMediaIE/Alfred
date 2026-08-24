@@ -37,6 +37,7 @@ from email.mime.multipart import MIMEMultipart
 from fastapi import APIRouter, Query, UploadFile, File, BackgroundTasks, HTTPException, Depends, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from src.constants import DATA_DIR
+from src.branding import get_brand_config
 
 from src.llm_core import llm_call_async
 from src.upload_limits import read_upload_limited, EMAIL_COMPOSE_UPLOAD_MAX_BYTES
@@ -47,7 +48,6 @@ from routes.email_helpers import (
     _load_settings, _save_settings, _get_email_config,
     _send_smtp_message, _smtp_security_mode,
     _IMAP_TIMEOUT_SECONDS, _open_imap_connection,
-    make_oauth_state, verify_oauth_state,
     EmailNotConfiguredError,
     _imap_connect, _imap, _decode_header, _detect_sent_folder, _detect_drafts_folder,
     _extract_attachment_text, _list_attachments_from_msg, _has_visible_attachments, _is_likely_signature_image_attachment,
@@ -65,6 +65,8 @@ logger = logging.getLogger(__name__)
 
 ODYSSEUS_MAIL_ORIGIN = "odysseus-ui"
 EMAIL_READ_ATTACHMENT_VERSION = 2
+_REMINDER_SUBJECT_PREFIX = f"Reminder ({get_brand_config().product_name}):"
+_LEGACY_REMINDER_SUBJECT_PREFIX = "Reminder (Odysseus):"
 
 
 def _safe_attachment_zip_name(name: str, fallback: str) -> str:
@@ -247,8 +249,13 @@ def _record_email_received_events(owner: str, account_id: str | None, folder: st
             conn.close()
 
         if count and new_keys:
-            for _ in new_keys[:50]:
-                fire_event("email_received", owner)
+            for message_key in new_keys[:50]:
+                fire_event(
+                    "email_received",
+                    owner,
+                    payload={"email":{"message_key":message_key,"account":account_key,"folder":folder}},
+                    dedupe_key=f"email:{account_key}:{folder}:{message_key}",
+                )
             logger.info("Fired email_received for %d new message(s)", min(len(new_keys), 50))
     except Exception:
         logger.debug("email_received event detection skipped", exc_info=True)
@@ -1472,12 +1479,12 @@ def setup_email_routes():
                 # All emails NOT marked as answered/done (read or unread).
                 status, data = _imap_uid_search(conn, f"(UNANSWERED{from_clause})")
             elif filter_ == "reminders":
-                # Prefer the Odysseus marker header, but include the subject
-                # fallback too. The fallback uses a distinct Odysseus prefix
-                # so ordinary emails containing "Reminder" don't get mixed in.
+                # Prefer the compatibility marker header, but include both the
+                # current and legacy subject fallbacks so upgrades retain old mail.
                 status, data = _imap_uid_search(
                     conn,
-                    f'(OR HEADER X-Odysseus-Kind "reminder" SUBJECT "Reminder (Odysseus):"{from_clause})',
+                    f'(OR HEADER X-Odysseus-Kind "reminder" '
+                    f'(OR SUBJECT "{_REMINDER_SUBJECT_PREFIX}" SUBJECT "{_LEGACY_REMINDER_SUBJECT_PREFIX}"){from_clause})',
                 )
             elif filter_ == "pending_30d":
                 # "What's pending in the last month" — UNANSWERED + delivered
@@ -3114,7 +3121,7 @@ def setup_email_routes():
         permanent: bool = Query(False),
         owner: str = Depends(require_owner),
     ):
-        """Delete email messages stamped as Odysseus reminders."""
+        """Delete OM Automate reminder mail, including legacy marker formats."""
         if account_id:
             _assert_owns_account(account_id, owner)
         deleted = 0
@@ -3153,11 +3160,13 @@ def setup_email_routes():
                         # explicit kind header, and subject fallback catches
                         # clients/providers that stripped custom headers.
                         uids.update(_search_uids(conn, f'(HEADER X-Odysseus-Kind {_search_quote("reminder")})'))
-                        uids.update(_search_uids(conn, f'(SUBJECT {_search_quote("Reminder (Odysseus):")})'))
+                        uids.update(_search_uids(conn, f'(SUBJECT {_search_quote(_REMINDER_SUBJECT_PREFIX)})'))
+                        uids.update(_search_uids(conn, f'(SUBJECT {_search_quote(_LEGACY_REMINDER_SUBJECT_PREFIX)})'))
                         for addr in own_addrs:
                             addr_q = _search_quote(addr)
-                            uids.update(_search_uids(conn, f'(FROM {addr_q} SUBJECT {_search_quote("Reminder (Odysseus):")})'))
-                            # Legacy reminders created before the Odysseus
+                            uids.update(_search_uids(conn, f'(FROM {addr_q} SUBJECT {_search_quote(_REMINDER_SUBJECT_PREFIX)})'))
+                            uids.update(_search_uids(conn, f'(FROM {addr_q} SUBJECT {_search_quote(_LEGACY_REMINDER_SUBJECT_PREFIX)})'))
+                            # Legacy reminders created before the branded
                             # prefix still came from this mailbox as
                             # "Reminder: ..."; include them in Clear without
                             # sweeping unrelated external reminder emails.
@@ -3356,7 +3365,7 @@ def setup_email_routes():
 
     @router.post("/compose-from-odysseus")
     async def compose_from_odysseus(data: dict, owner: str = Depends(require_owner)):
-        """Stage an Odysseus document or gallery image as a compose upload."""
+        """Stage an OM Automate document or gallery image as a compose upload."""
         kind = str(data.get("kind") or "").strip().lower()
         item_id = str(data.get("id") or "").strip()
         if kind not in {"document", "gallery"} or not item_id:
@@ -3375,12 +3384,12 @@ def setup_email_routes():
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Failed to stage Odysseus attachment {kind}/{item_id}: {e}")
+            logger.error(f"Failed to stage OM Automate attachment {kind}/{item_id}: {e}")
             return {"success": False, "error": "Mail operation failed"}
 
     @router.post("/compose-from-odysseus-zip")
     async def compose_from_odysseus_zip(data: dict, owner: str = Depends(require_owner)):
-        """Stage several Odysseus documents/gallery images as one zip attachment."""
+        """Stage several OM Automate documents/gallery images as one zip attachment."""
         raw_items = data.get("items") or []
         if not isinstance(raw_items, list) or not raw_items:
             raise HTTPException(status_code=400, detail="Expected items")
@@ -3427,7 +3436,7 @@ def setup_email_routes():
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Failed to stage Odysseus zip attachment: {e}")
+            logger.error(f"Failed to stage OM Automate zip attachment: {e}")
             return {"success": False, "error": "Mail operation failed"}
 
     @router.post("/compose-from-attachment/{uid}/{index}")
@@ -5101,31 +5110,21 @@ def setup_email_routes():
         finally:
             db.close()
 
-    # ── Google OAuth2 routes ──
+    # ── Retired legacy Google IMAP/SMTP OAuth routes ──
+    #
+    # New Google connections use /api/integrations/google with PKCE, one-time
+    # owner-bound state, narrow Gmail/Calendar scopes, and provider adapters.
+    # Keep these URLs as migration shims for old bookmarks/UI bundles, but do
+    # not initiate or complete the former broad mail.google.com token flow.
 
     @router.get("/oauth/google/authorize")
     async def google_oauth_authorize(account_id: str = Query(...), request: Request = None, owner: str = Depends(require_user)):
-        import urllib.parse
         _assert_owns_account(account_id, owner)
-        client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
-        if not client_id:
-            raise HTTPException(400, "GOOGLE_OAUTH_CLIENT_ID not set — add it to .env")
-        redirect_uri = (
-            os.environ.get("GOOGLE_OAUTH_REDIRECT_URI")
-            or f"http://{request.headers.get('host', 'localhost:7000')}/api/email/oauth/google/callback"
-        )
-        state = make_oauth_state(account_id, owner)
-        params = urllib.parse.urlencode({
-            "client_id": client_id,
-            "redirect_uri": redirect_uri,
-            "response_type": "code",
-            "scope": "https://mail.google.com/ email",
-            "access_type": "offline",
-            "prompt": "consent",
-            "state": state,
-        })
         from fastapi.responses import RedirectResponse as _RR
-        return _RR(f"https://accounts.google.com/o/oauth2/v2/auth?{params}")
+        return _RR(
+            "/?section=integrations&google_oauth=setup&code=use_google_workspace",
+            status_code=303,
+        )
 
     @router.get("/oauth/google/callback")
     async def google_oauth_callback(
@@ -5134,90 +5133,10 @@ def setup_email_routes():
         error: str = Query(None),
         request: Request = None,
     ):
-        import urllib.parse
         from fastapi.responses import RedirectResponse as _RR
-        if error:
-            return _RR("/?section=integrations&email_oauth_error=google_error")
-        if not code or not state:
-            return _RR("/?section=integrations&email_oauth_error=missing_code")
-        state_data = verify_oauth_state(state)
-        if not state_data:
-            return _RR("/?section=integrations&email_oauth_error=invalid_state")
-        account_id = state_data.get("a", "")
-        owner = state_data.get("o", "")
-        client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
-        client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
-        redirect_uri = (
-            os.environ.get("GOOGLE_OAUTH_REDIRECT_URI")
-            or f"http://{request.headers.get('host', 'localhost:7000')}/api/email/oauth/google/callback"
+        return _RR(
+            "/?section=integrations&google_oauth=setup&code=legacy_email_oauth_retired",
+            status_code=303,
         )
-        import httpx as _httpx
-        try:
-            resp = _httpx.post("https://oauth2.googleapis.com/token", data={
-                "code": code,
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "redirect_uri": redirect_uri,
-                "grant_type": "authorization_code",
-            }, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception:
-            logger.warning("Google token exchange failed")
-            return _RR("/?section=integrations&email_oauth_error=token_exchange_failed")
-        access_token = data.get("access_token", "")
-        refresh_token = data.get("refresh_token", "")
-        expiry = str(int(time.time()) + data.get("expires_in", 3600))
-        # Fetch the email address from userinfo so we can auto-fill imap_user.
-        email_addr = ""
-        display_name = ""
-        try:
-            ui = _httpx.get("https://www.googleapis.com/oauth2/v1/userinfo",
-                            headers={"Authorization": f"Bearer {access_token}"}, timeout=10)
-            if ui.is_success:
-                ui_data = ui.json()
-                email_addr = ui_data.get("email", "")
-                display_name = ui_data.get("name", "")
-        except Exception:
-            pass
-        from core.database import SessionLocal, EmailAccount
-        from src.secret_storage import encrypt as _enc
-        db = SessionLocal()
-        try:
-            row = db.query(EmailAccount).filter(EmailAccount.id == account_id).first()
-            if not row:
-                return _RR("/?section=integrations&email_oauth_error=account_not_found")
-            # SECURITY: verify the account belongs to the initiating user.
-            if owner and row.owner and row.owner != owner:
-                logger.warning("OAuth callback owner mismatch — rejecting token write")
-                return _RR("/?section=integrations&email_oauth_error=ownership_error")
-            row.oauth_provider = "google"
-            row.oauth_access_token = _enc(access_token)
-            if refresh_token:
-                row.oauth_refresh_token = _enc(refresh_token)
-            row.oauth_token_expiry = expiry
-            # Auto-fill Google IMAP/SMTP settings if not already configured.
-            if not row.imap_host:
-                row.imap_host = "imap.gmail.com"
-                row.imap_port = 993
-                row.imap_starttls = False
-            if not row.smtp_host:
-                row.smtp_host = "smtp.gmail.com"
-                row.smtp_port = 587
-            if email_addr:
-                if not row.imap_user:
-                    row.imap_user = email_addr
-                if not row.smtp_user:
-                    row.smtp_user = email_addr
-                if not row.from_address:
-                    row.from_address = email_addr
-                if not row.name or row.name == row.id:
-                    row.name = email_addr
-            if display_name and not row.display_name:
-                row.display_name = display_name
-            db.commit()
-        finally:
-            db.close()
-        return _RR("/?section=integrations&email_oauth_success=1")
 
     return router

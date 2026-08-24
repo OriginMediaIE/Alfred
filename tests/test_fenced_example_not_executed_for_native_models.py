@@ -112,7 +112,7 @@ def test_native_model_illustrative_bash_fence_not_executed(monkeypatch):
 # 2. Native model that DOES emit a real native tool_calls entry
 #    -> that call IS resolved/executed normally (untouched native path).
 # ---------------------------------------------------------------------------
-def test_native_model_real_native_tool_call_is_executed(monkeypatch):
+def test_uncertified_endpoint_native_tool_call_is_not_executed(monkeypatch):
     exec_calls = []
     _patch_common(monkeypatch, exec_calls)
     native_calls = [{"name": "bash", "arguments": json.dumps({"command": "echo hi"})}]
@@ -122,16 +122,14 @@ def test_native_model_real_native_tool_call_is_executed(monkeypatch):
         native_calls=native_calls,
         max_rounds=2,
     )
-    assert len(exec_calls) == 1, f"expected the native tool call to execute, got: {exec_calls}"
-    assert exec_calls[0].tool_type == "bash"
-    assert "echo hi" in exec_calls[0].content
+    assert exec_calls == []
 
 
 # ---------------------------------------------------------------------------
 # 3. Non-native / textual-only model using the legitimate fenced format it
 #    depends on -> still correctly parsed and executed (regression check).
 # ---------------------------------------------------------------------------
-def test_non_native_model_fenced_tool_call_still_executed(monkeypatch):
+def test_non_native_model_fenced_tool_call_is_inert(monkeypatch):
     exec_calls = []
     _patch_common(monkeypatch, exec_calls)
     # Neither this model name nor this endpoint host match any of the
@@ -144,9 +142,7 @@ def test_non_native_model_fenced_tool_call_still_executed(monkeypatch):
         max_rounds=2,
         endpoint_url="http://192.168.1.50:8000/v1",
     )
-    assert len(exec_calls) == 1, f"non-native model's fenced tool call should still execute: {exec_calls}"
-    assert exec_calls[0].tool_type == "bash"
-    assert "echo hi" in exec_calls[0].content
+    assert exec_calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -183,11 +179,10 @@ def test_resolve_tool_blocks_skips_textual_fallback_for_native_models_with_no_na
     assert used_native is False
 
 
-def test_resolve_tool_blocks_keeps_textual_fallback_for_non_native_models():
+def test_resolve_tool_blocks_keeps_textual_fallback_inert_for_non_native_models():
     text = "```bash\necho hi\n```"
     blocks, used_native, _ = al._resolve_tool_blocks(text, [], round_num=1, is_api_model=False)
-    assert len(blocks) == 1
-    assert blocks[0].tool_type == "bash"
+    assert blocks == []
     assert used_native is False
 
 
@@ -296,20 +291,15 @@ def test_skip_fenced_ignores_only_the_fenced_pattern():
     assert len(parse_tool_blocks(text, skip_fenced=False)) == 1
 
 
-def test_resolve_tool_blocks_recovers_invoke_markup_for_native_model_with_no_native_calls():
-    """End-to-end: a native model (is_api_model=True) that emitted no
-    structured tool_calls but leaked an <invoke> call into its text content
-    must still have that real call recovered — not dropped alongside the
-    fenced-example gating."""
+def test_resolve_tool_blocks_does_not_execute_leaked_invoke_markup():
+    """Textual markup is not an authorization-bearing tool transport."""
     leaked = (
         "I'll search for that now.\n"
         '<invoke name="web_search"><parameter name="query">odysseus changelog</parameter></invoke>'
     )
     blocks, used_native, _ = al._resolve_tool_blocks(leaked, [], round_num=1, is_api_model=True)
     assert used_native is False
-    assert len(blocks) == 1
-    assert blocks[0].tool_type == "web_search"
-    assert "odysseus changelog" in blocks[0].content
+    assert blocks == []
 
 
 # ---------------------------------------------------------------------------

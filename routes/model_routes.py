@@ -695,17 +695,28 @@ def _probe_single_model(base: str, api_key: str, model_id: str, timeout: int = 1
         return {"status": "ok", "latency_ms": 0, "skipped": True}
     messages = [
         {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "Say OK"},
+        {
+            "role": "user",
+            "content": (
+                "Call the test tool now. Do not answer with prose."
+                if with_tools
+                else "Say OK"
+            ),
+        },
     ]
     # Simple tool definition to test tool support
     _test_tools = [{"type": "function", "function": {"name": "test", "description": "Test tool", "parameters": {"type": "object", "properties": {}}}}] if with_tools else None
+    # Reasoning-capable local models may spend more than a handful of tokens
+    # before emitting the structured call. A five-token cap created false
+    # negatives even though Ollama returned a valid tool call at normal limits.
+    probe_token_limit = 512 if with_tools else 5
 
     if provider == "anthropic":
         from src.llm_core import _normalize_anthropic_url, _build_anthropic_headers, _build_anthropic_payload
         target_url = _normalize_anthropic_url(base)
         auth_headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         h = _build_anthropic_headers(auth_headers)
-        payload = _build_anthropic_payload(model_id, messages, 0.0, 5)
+        payload = _build_anthropic_payload(model_id, messages, 0.0, probe_token_limit)
         if _test_tools:
             payload["tools"] = [{"name": "test", "description": "Test tool", "input_schema": {"type": "object", "properties": {}}}]
     elif provider == "ollama":
@@ -713,14 +724,14 @@ def _probe_single_model(base: str, api_key: str, model_id: str, timeout: int = 1
         target_url = build_chat_url(base)
         h = _safe_build_headers(api_key, base)
         h["Content-Type"] = "application/json"
-        payload = _build_ollama_payload(model_id, messages, 0.0, 5, stream=False, tools=_test_tools)
+        payload = _build_ollama_payload(model_id, messages, 0.0, probe_token_limit, stream=False, tools=_test_tools)
     else:
         target_url = build_chat_url(base)
         h = _safe_build_headers(api_key, base)
         h["Content-Type"] = "application/json"
         from src.llm_core import _uses_max_completion_tokens, _restricts_temperature
         _max_key = "max_completion_tokens" if _uses_max_completion_tokens(model_id) else "max_tokens"
-        payload = {"model": model_id, "messages": messages, _max_key: 5}
+        payload = {"model": model_id, "messages": messages, _max_key: probe_token_limit}
         # Reasoning models (o1/o3/o4/gpt-5) reject an explicit temperature, so a
         # probe that hardcodes one falsely reports a working endpoint as failing.
         if not _restricts_temperature(model_id):
@@ -733,6 +744,38 @@ def _probe_single_model(base: str, api_key: str, model_id: str, timeout: int = 1
         r = httpx.post(target_url, headers=h, json=payload, timeout=timeout, verify=llm_verify())
         latency = round((_time.time() - t0) * 1000)
         if r.is_success:
+            if with_tools:
+                try:
+                    body = r.json()
+                except Exception:
+                    return {
+                        "status": "fail",
+                        "latency_ms": latency,
+                        "error": "Tool probe returned a non-JSON response",
+                        "tool_call_verified": False,
+                    }
+                if provider == "anthropic":
+                    verified = any(
+                        isinstance(item, dict) and item.get("type") == "tool_use"
+                        for item in (body.get("content") or [])
+                    )
+                else:
+                    message = ((body.get("choices") or [{}])[0].get("message") or {})
+                    if provider == "ollama":
+                        message = body.get("message") or message
+                    verified = bool(message.get("tool_calls"))
+                if not verified:
+                    return {
+                        "status": "fail",
+                        "latency_ms": latency,
+                        "error": "Model answered without a native structured tool call",
+                        "tool_call_verified": False,
+                    }
+                return {
+                    "status": "ok",
+                    "latency_ms": latency,
+                    "tool_call_verified": True,
+                }
             return {"status": "ok", "latency_ms": latency}
         else:
             # Extract error detail from response body
@@ -982,7 +1025,7 @@ def _ping_endpoint(base_url: str, api_key: str = None, timeout: float = 1.5) -> 
                 return {
                     "reachable": False,
                     "status_code": r.status_code,
-                    "error": "That is Odysseus, not a model server. Use the Ollama URL, usually http://host.docker.internal:11434/v1 in Docker.",
+                    "error": "That is OM Automate, not a model server. Use the Ollama URL, usually http://host.docker.internal:11434/v1 in Docker.",
                 }
             return {"reachable": False, "status_code": r.status_code, "error": f"HTTP {r.status_code} redirect"}
         if 200 <= r.status_code < 300:
@@ -1674,6 +1717,17 @@ def setup_model_routes(model_discovery):
                 result["model"] = model_id
                 result["endpoint_id"] = ep_id
                 results.append(result)
+
+                # Agent comparison is the operator-facing capability
+                # qualification flow. Persist only evidence from an actual
+                # structured-call challenge; ordinary connectivity probes do
+                # not alter the execution boundary.
+                if _with_tools and ep_id:
+                    ep_obj = db.query(ModelEndpoint).filter(ModelEndpoint.id == ep_id).first()
+                    if ep_obj is not None:
+                        ep_obj.supports_tools = bool(result.get("tool_call_verified"))
+                        db.commit()
+                        result["endpoint_supports_tools"] = ep_obj.supports_tools
 
             return {"results": results}
         finally:

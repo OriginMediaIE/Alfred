@@ -12,6 +12,7 @@ import routes.chat_helpers as chat_helpers
 from routes.chat_helpers import (
     _enforce_chat_privileges,
     _session_is_research_spinoff,
+    add_user_message,
     auto_name_session,
     build_chat_context,
     build_uploaded_file_manifest,
@@ -304,7 +305,8 @@ def test_clean_thinking_for_save_extracts_gemma4_thought_channel():
     )
 
     assert content == "Final answer."
-    assert metadata["thinking"] == "internal reasoning"
+    assert "thinking" not in metadata
+    assert "private chain-of-thought" in metadata["reasoning_summary"]
     assert metadata["model"] == "google/gemma-4-31B-it"
 
 
@@ -325,7 +327,8 @@ def test_clean_thinking_for_save_unwraps_gemma4_response_channel():
     )
 
     assert content == "Final answer."
-    assert metadata["thinking"] == "internal reasoning"
+    assert "thinking" not in metadata
+    assert "private chain-of-thought" in metadata["reasoning_summary"]
 
 
 def test_clean_thinking_for_save_extracts_thought_tag():
@@ -335,7 +338,20 @@ def test_clean_thinking_for_save_extracts_thought_tag():
     )
 
     assert content == "Final answer."
-    assert metadata["thinking"] == "internal reasoning"
+    assert "thinking" not in metadata
+    assert "private chain-of-thought" in metadata["reasoning_summary"]
+
+
+def test_clean_thinking_for_save_never_persists_reasoning_only_content():
+    content, metadata = clean_thinking_for_save(
+        "<think>private scratchpad with no final response</think>",
+        {},
+    )
+
+    assert content == "Model reasoning ended without a visible answer."
+    assert "private scratchpad" not in content
+    assert "thinking" not in metadata
+    assert "private chain-of-thought" in metadata["reasoning_summary"]
 
 
 def test_save_assistant_response_preserves_actual_and_requested_model():
@@ -352,6 +368,27 @@ def test_save_assistant_response_preserves_actual_and_requested_model():
 
     assert sess.history[-1].metadata["requested_model"] == "selected-model"
     assert sess.history[-1].metadata["model"] == "actual-model"
+
+
+def test_incognito_messages_never_call_persisting_session_adapter():
+    class IncognitoSession:
+        model = "local-model"
+        history = []
+        message_count = 0
+        def add_message(self, _message):
+            raise AssertionError("persistent add_message must not be called")
+
+    sess = IncognitoSession()
+    preprocessed = PreprocessedMessage(
+        enhanced_message="private question",
+        user_content="private question",
+        text_for_context="private question",
+        youtube_transcripts=[],
+        attachment_meta=[],
+    )
+    add_user_message(sess, SimpleNamespace(), preprocessed, incognito=True)
+    save_assistant_response(sess, None, "incognito", "private answer", {}, incognito=True)
+    assert [(item.role,item.content) for item in sess.history]==[("user","private question"),("assistant","private answer")]
 
 
 class _SpinMsg:

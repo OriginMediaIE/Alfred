@@ -33,12 +33,15 @@ import app
 
 client = TestClient(app.app, raise_server_exceptions=False)
 health = client.get("/api/health")
+ready = client.get("/api/ready")
 version = client.get("/api/version")
 root = client.get("/", follow_redirects=False)
 login = client.get("/login")
 print(json.dumps({
     "health_status": health.status_code,
     "health": health.json(),
+    "ready_status": ready.status_code,
+    "ready": ready.json(),
     "version_status": version.status_code,
     "version": version.json(),
     "root_status": root.status_code,
@@ -73,7 +76,7 @@ print(json.dumps({
 def test_liveness_endpoint_is_public_and_well_formed(probe: dict) -> None:
     assert probe["health_status"] == 200
     payload = probe["health"]
-    assert payload["status"] == "healthy"
+    assert payload["status"] == "live"
     timestamp = datetime.fromisoformat(payload["timestamp"])
     assert timestamp.tzinfo is not None
 
@@ -97,7 +100,12 @@ def test_login_page_contains_credential_controls(probe: dict) -> None:
     assert "password" in html
 
 
-def test_readiness_route_is_registered(probe: dict) -> None:
-    # Its unauthenticated 401 and limited dependency coverage are recorded
-    # defects, so this baseline test deliberately does not freeze that behavior.
+def test_readiness_route_is_public_and_secret_free(probe: dict) -> None:
     assert "/api/ready" in probe["paths"]
+    assert probe["ready_status"] in {200, 503}
+    assert probe["ready_status"] != 401
+    payload = probe["ready"]
+    assert payload["status"] in {"ready", "degraded", "failed"}
+    serialized = json.dumps(payload).lower()
+    assert str(Path(__file__).resolve().parents[1]).lower() not in serialized
+    assert "traceback" not in serialized

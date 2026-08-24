@@ -6,6 +6,7 @@ import os
 import re
 import time
 import logging
+import uuid
 from datetime import datetime
 from typing import Dict, Any, AsyncGenerator, List, Optional
 
@@ -48,12 +49,115 @@ from src.tool_policy import (
     is_web_search_explicitly_denied,
     web_search_enabled_for_turn,
 )
+from src.tool_authorization import ExecutionOrigin
 
 logger = logging.getLogger(__name__)
+
+
+def _enforce_local_only(owner, session) -> None:
+    """Fail before context preprocessing can call a remote selected model."""
+    from services.privacy_service import PrivacyError, get_privacy_service
+    try:
+        get_privacy_service().ensure_local_endpoint(
+            owner,
+            str(getattr(session, "endpoint_url", "") or ""),
+            purpose="chat request",
+        )
+    except PrivacyError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 # Track active streams for partial-save safety net
 _active_streams: Dict[str, dict] = {}
 _IMAGE_MODEL_PREFIXES = ("gpt-image", "dall-e", "chatgpt-image")
+_SHELL_AND_FILE_TOOLS = {
+    "bash", "python", "read_file", "write_file", "edit_file",
+    "grep", "glob", "ls", "get_workspace", "manage_bg_jobs",
+}
+
+
+class _PrivateReasoningFilter:
+    """Remove private reasoning before a model stream crosses the HTTP boundary.
+
+    Providers should flag reasoning deltas, but some local OpenAI-compatible
+    servers instead mix ``<think>`` blocks into ordinary content.  Chunk
+    boundaries can split a tag, so this deliberately keeps the possible tag
+    suffix until the next delta rather than leaking it to the browser.
+    """
+
+    _OPEN = ("<think", "<thinking")
+    _CLOSE = ("</think", "</thinking")
+
+    def __init__(self) -> None:
+        self._pending = ""
+        self._inside = False
+        self.saw_reasoning = False
+
+    @staticmethod
+    def _could_be_marker(value: str, markers: tuple[str, ...]) -> bool:
+        lowered = value.lower()
+        return any(marker.startswith(lowered) for marker in markers)
+
+    def feed(self, text: str, *, flagged: bool = False) -> str:
+        if flagged:
+            self.saw_reasoning = self.saw_reasoning or bool(text)
+            return ""
+        source = self._pending + str(text or "")
+        self._pending = ""
+        output: list[str] = []
+        while source:
+            marker_set = self._CLOSE if self._inside else (*self._OPEN, *self._CLOSE)
+            marker_at = source.find("<")
+            if marker_at < 0:
+                if not self._inside:
+                    output.append(source)
+                break
+            if marker_at:
+                if not self._inside:
+                    output.append(source[:marker_at])
+                source = source[marker_at:]
+            lowered = source.lower()
+            matching = next((m for m in marker_set if lowered.startswith(m)), None)
+            if matching:
+                tag_end = source.find(">")
+                if tag_end < 0:
+                    self._pending = source
+                    break
+                self.saw_reasoning = True
+                self._inside = not matching.startswith("</")
+                source = source[tag_end + 1:]
+                continue
+            if self._could_be_marker(source, marker_set):
+                self._pending = source
+                break
+            if not self._inside:
+                output.append("<")
+            source = source[1:]
+        return "".join(output)
+
+    def finish(self) -> str:
+        """Flush only text that cannot be an unfinished private block."""
+        pending, self._pending = self._pending, ""
+        if self._inside or self._could_be_marker(pending, (*self._OPEN, *self._CLOSE)):
+            if pending:
+                self.saw_reasoning = True
+            return ""
+        return pending
+
+
+def _safe_reasoning_status_event() -> str:
+    return f'data: {json.dumps({"type": "reasoning_status", "data": {"status": "active"}})}\n\n'
+
+
+def _require_chat_transport_scope(request: Request) -> None:
+    """Bearer-token chat transport requires the explicit ``chat`` scope."""
+
+    if not getattr(request.state, "api_token", False):
+        return
+    scopes = set(getattr(request.state, "api_token_scopes", []) or [])
+    if "chat" not in scopes:
+        raise HTTPException(403, "API token requires the 'chat' scope")
+    if not getattr(request.state, "api_token_owner", None):
+        raise HTTPException(403, "API token has no attributable owner")
 
 
 def _stream_set(session_id: str, **fields) -> None:
@@ -424,6 +528,7 @@ def setup_chat_routes(
     # ------------------------------------------------------------------ #
     @router.post("/api/chat", response_model=Dict[str, str])
     async def chat_endpoint(request: Request, chat_request: ChatRequest) -> Dict[str, str]:
+        _require_chat_transport_scope(request)
         _set_user_time_from_request(request)
 
         message = chat_request.message
@@ -455,6 +560,7 @@ def setup_chat_routes(
                 400,
                 "No model selected for this chat. Open the model picker and choose one before sending.",
             )
+        _enforce_local_only(owner, sess)
 
         # Same allowed_models + daily-cap gate as chat_stream (mirror so the
         # non-streaming path can't be used to bypass).
@@ -534,6 +640,7 @@ def setup_chat_routes(
     # ------------------------------------------------------------------ #
     @router.post("/api/chat_stream")
     async def chat_stream(request: Request) -> StreamingResponse:
+        _require_chat_transport_scope(request)
         body = None
         try:
             if request.headers.get("content-type", "").startswith("application/json"):
@@ -758,6 +865,7 @@ def setup_chat_routes(
 
         # Ensure session has auth headers
         resolve_session_auth(sess, session, owner=effective_user(request))
+        _enforce_local_only(effective_user(request), sess)
 
         # Check for research_pending BEFORE mode persist overwrites it
         do_research = str(use_research).lower() == "true"
@@ -765,6 +873,14 @@ def setup_chat_routes(
             if get_session_mode(session) == 'research_pending':
                 do_research = True
                 logger.info(f"Session {session} in research_pending — auto-triggering research")
+        if incognito:
+            # Incognito is an ephemeral conversation boundary. Agent/research
+            # execution can create action-ledger rows, files, jobs, provider
+            # effects, or other durable derivatives even when chat messages
+            # themselves are not saved, so keep the turn strictly chat-only.
+            do_research = False
+            chat_mode = "chat"
+            auto_escalated = False
 
         att_ids = []
         if body and isinstance(body.get("attachments"), list):
@@ -779,7 +895,9 @@ def setup_chat_routes(
         pre_context_tool_policy = build_effective_tool_policy(
             last_user_message=message,
         )
-        allow_tool_preprocessing = not pre_context_tool_policy.block_all_tool_calls
+        allow_tool_preprocessing = (
+            not pre_context_tool_policy.block_all_tool_calls and not incognito
+        )
 
         # Build shared context (stream path uses enhanced_message for context preface)
         ctx = await build_chat_context(
@@ -897,13 +1015,14 @@ def setup_chat_routes(
 
         # Build disabled-tools set from frontend toggles + user privileges
         disabled_tools = set()
-        # Only disable bash when the caller *explicitly* set it to a falsy
-        # value. When unset (None), defer to per-user privilege checks below.
+        # Shell/files are opt-in for every turn. An omitted flag is off, even
+        # for an administrator; the privilege gate below can only remove
+        # capability, never silently enable it.
         # Web search is per-turn opt-in: either the chat pre-search setting
         # (`use_web=true`) or agent web toggle (`allow_web_search=true`) must
         # explicitly enable it.
-        if allow_bash is not None and str(allow_bash).lower() != "true":
-            disabled_tools.add("bash")
+        if str(allow_bash).lower() != "true":
+            disabled_tools.update(_SHELL_AND_FILE_TOOLS)
         _explicit_web_intent = bool(_tool_intent and _tool_intent.category == "web")
         if is_web_search_explicitly_denied(allow_web_search) or not _search_enabled:
             disabled_tools.update(WEB_TOOL_NAMES)
@@ -934,6 +1053,7 @@ def setup_chat_routes(
                 "manage_memory",      # persistent memory store
                 "search_chats",       # past chat history
                 "manage_skills",      # skill presets tied to user
+                "generate_image",     # generated files + action records
             })
 
         # Active email reader open → strip the tools that let the agent drift
@@ -958,7 +1078,7 @@ def setup_chat_routes(
             _privs = request.app.state.auth_manager.get_privileges(_user)
         if _privs:
             if not _privs.get("can_use_bash", True):
-                disabled_tools.update({"bash", "python", "read_file", "write_file"})
+                disabled_tools.update(_SHELL_AND_FILE_TOOLS)
             if not _privs.get("can_use_browser", True):
                 disabled_tools.add("builtin_browser")
             if not _privs.get("can_use_documents", True):
@@ -1029,7 +1149,7 @@ def setup_chat_routes(
         # Persist session mode after policy/privilege gates so blocked research
         # turns remain ordinary chat/agent streams and saved messages.
         _effective_mode = 'research' if effective_do_research else (chat_mode or 'chat')
-        if _effective_mode in ('agent', 'research', 'chat'):
+        if not incognito and _effective_mode in ('agent', 'research', 'chat'):
             set_session_mode(session, _effective_mode)
 
         async def stream_with_save() -> AsyncGenerator[str, None]:
@@ -1199,8 +1319,10 @@ def setup_chat_routes(
                 yield f"data: {json.dumps({'type': 'context_trimmed', 'data': {'context_length': ctx.context_length, 'messages_before': ctx.context_messages_before_trim, 'messages_after': ctx.context_messages_after_trim, 'tokens_before': ctx.context_tokens_before_trim, 'tokens_after': ctx.context_tokens_after_trim}})}\n\n"
 
             full_response = ""
-            thinking_response = ""
+            reasoning_filter = _PrivateReasoningFilter()
+            reasoning_status_sent = False
             last_metrics = None
+            awaiting_approval_stream = False
 
             # Configured fallback chain for the default chat model. Tried in
             # order if the session's primary model fails before producing
@@ -1222,40 +1344,114 @@ def setup_chat_routes(
 
             if _is_image_generation_session(sess, owner=_user):
                 from src.settings import get_setting
-                if tool_policy.blocks("generate_image"):
-                    _blocked_msg = tool_policy.reason_for("generate_image")
-                    yield f'data: {json.dumps({"delta": _blocked_msg})}\n\n'
-                    yield "data: [DONE]\n\n"
-                    _active_streams.pop(session, None)
-                    return
                 if not get_setting("image_gen_enabled", True):
                     yield f'data: {json.dumps({"delta": "Image generation is disabled by the administrator."})}\n\n'
                     yield "data: [DONE]\n\n"
                     _active_streams.pop(session, None)
                     return
-                from src.ai_interaction import do_generate_image
+                from src.agent_tools import ToolBlock, execute_tool_block
+                from src.tool_authorization import authority_for_owner
+                from src.tool_registry import ToolSurface
+
                 _user_msg = message or ""
                 yield f'data: {json.dumps({"type": "tool_start", "tool": "generate_image", "command": _user_msg[:100]})}\n\n'
                 yield ": heartbeat\n\n"
-                _img_result = await do_generate_image(f"{_user_msg}\n{sess.model}", session, owner=_user)
-                _img_output = _img_result.get("results", _img_result.get("error", ""))
-                _img_tool_data = {"type": "tool_output", "tool": "generate_image", "command": _user_msg[:100], "output": _img_output, "exit_code": 0 if "error" not in _img_result else 1}
-                for _k in ("image_url", "image_id", "image_prompt", "image_model", "image_size", "image_quality"):
+                _token_scopes = (
+                    set(getattr(request.state, "api_token_scopes", []) or [])
+                    if getattr(request.state, "api_token", False)
+                    else None
+                )
+                _image_authority = authority_for_owner(
+                    _user,
+                    surface=ToolSurface.INTERNAL,
+                    auth_manager=getattr(request.app.state, "auth_manager", None),
+                    api_token_scopes=_token_scopes,
+                    origin=ExecutionOrigin.INTERACTIVE_CHAT,
+                )
+                _img_desc, _img_result = await execute_tool_block(
+                    ToolBlock("generate_image", f"{_user_msg}\n{sess.model}"),
+                    session_id=session,
+                    disabled_tools=disabled_tools if disabled_tools else None,
+                    tool_policy=tool_policy,
+                    authority=_image_authority,
+                    request_id=uuid.uuid4().hex,
+                )
+                _img_output = (
+                    _img_result.get("results")
+                    or _img_result.get("output")
+                    or _img_result.get("stdout")
+                    or _img_result.get("error", "")
+                )
+                _img_tool_data = {
+                    "type": "tool_output",
+                    "tool": "generate_image",
+                    "command": _user_msg[:100],
+                    "output": _img_output,
+                    "exit_code": _img_result.get("exit_code"),
+                }
+                for _k in (
+                    "image_url", "image_id", "image_prompt", "image_model",
+                    "image_size", "image_quality", "blocked",
+                    "policy_decision", "policy_code", "requested_tool",
+                    "tool_name", "tool_version", "tool_surface", "risk_level",
+                    "required_permissions", "missing_permissions",
+                    "approval_required", "approval_id", "approval_status",
+                    "approval_expires_at", "approval_revision", "approval_url",
+                    "action_preview",
+                ):
                     if _k in _img_result:
                         _img_tool_data[_k] = _img_result[_k]
                 yield f'data: {json.dumps(_img_tool_data)}\n\n'
-                _desc = _img_result.get("results", _img_result.get("error", "Image generation complete"))
+                if _img_result.get("policy_decision") == "require_approval":
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "type": "approval_required",
+                                "status": "awaiting_approval",
+                                "data": {
+                                    key: _img_result[key]
+                                    for key in (
+                                        "requested_tool", "tool_name", "tool_version",
+                                        "tool_surface", "risk_level",
+                                        "required_permissions", "policy_code",
+                                        "approval_id", "approval_status",
+                                        "approval_expires_at", "approval_revision",
+                                        "approval_url",
+                                        "action_preview",
+                                    )
+                                    if key in _img_result
+                                },
+                            }
+                        )
+                        + "\n\n"
+                    )
+                _desc = (
+                    "Awaiting approval."
+                    if _img_result.get("policy_decision") == "require_approval"
+                    else (_img_output or _img_desc)
+                )
                 full_response = _desc
                 yield f'data: {json.dumps({"delta": _desc})}\n\n'
                 # Save to session history
                 if not incognito:
-                    _ev = {"round": 1, "tool": "generate_image", "command": _user_msg[:100], "output": _img_output, "exit_code": 0 if "error" not in _img_result else 1}
-                    for _ek in ("image_url", "image_id", "image_prompt", "image_model", "image_size", "image_quality"):
-                        if _img_result.get(_ek):
-                            _ev[_ek] = _img_result[_ek]
+                    _ev = {
+                        key: value
+                        for key, value in _img_tool_data.items()
+                        if key != "type"
+                    }
+                    _ev["round"] = 1
                     sess.add_message(ChatMessage("assistant", full_response, metadata={"tool_events": [_ev], "model": sess.model}))
                     session_manager.save_sessions()
-                yield f'data: {json.dumps({"type": "metrics", "data": {"total_time": 0}})}\n\n'
+                yield f'data: {json.dumps({"type": "metrics", "data": {"total_time": 0, "tool_events": [_ev] if not incognito else []}})}\n\n'
+                _stream_set(
+                    session,
+                    status=(
+                        "awaiting_approval"
+                        if _img_result.get("policy_decision") == "require_approval"
+                        else "done"
+                    ),
+                )
                 yield "data: [DONE]\n\n"
                 _active_streams.pop(session, None)
                 return
@@ -1289,12 +1485,16 @@ def setup_chat_routes(
                                     # Forward them so the client can show a thinking
                                     # indicator, but don't fold them into the saved
                                     # reply (mirrors the rewrite path below).
-                                    if data.get("thinking"):
-                                        thinking_response += data["delta"]
-                                    else:
-                                        full_response += data["delta"]
+                                    safe_delta = reasoning_filter.feed(
+                                        data["delta"], flagged=bool(data.get("thinking"))
+                                    )
+                                    if reasoning_filter.saw_reasoning and not reasoning_status_sent:
+                                        reasoning_status_sent = True
+                                        yield _safe_reasoning_status_event()
+                                    if safe_delta:
+                                        full_response += safe_delta
                                         _stream_set(session, partial=full_response)
-                                    yield chunk
+                                        yield f'data: {json.dumps({"delta": safe_delta})}\n\n'
                                 elif data.get("type") == "fallback":
                                     # Selected model failed; a fallback answered.
                                     # Forward the notice and remember the real model.
@@ -1339,6 +1539,11 @@ def setup_chat_routes(
                         elif chunk.startswith("event: "):
                             yield chunk
                         elif chunk == "data: [DONE]\n\n":
+                            safe_tail = reasoning_filter.finish()
+                            if safe_tail:
+                                full_response += safe_tail
+                                _stream_set(session, partial=full_response)
+                                yield f'data: {json.dumps({"delta": safe_tail})}\n\n'
                             # Generate fallback metrics if LLM didn't send usage
                             if not last_metrics and full_response:
                                 _elapsed = time.time() - _chat_start
@@ -1360,8 +1565,9 @@ def setup_chat_routes(
                                 yield f'data: {json.dumps({"type": "metrics", "data": last_metrics})}\n\n'
                             if full_response:
                                 _metrics_to_save = dict(last_metrics or {})
-                                if thinking_response.strip() and not _metrics_to_save.get("thinking"):
-                                    _metrics_to_save["thinking"] = thinking_response.strip()
+                                if reasoning_filter.saw_reasoning:
+                                    _metrics_to_save["reasoning_summary"] = "Model reasoning completed; private chain-of-thought is not displayed."
+                                _metrics_to_save.pop("thinking", None)
                                 _saved_id = save_assistant_response(
                                     sess, session_manager, session, full_response, _metrics_to_save,
                                     character_name=ctx.preset.character_name,
@@ -1430,6 +1636,11 @@ def setup_chat_routes(
                     _forced_tools = None
                     if _search_enabled:
                         _forced_tools = set(WEB_TOOL_NAMES)
+                    _api_token_scopes = (
+                        set(getattr(request.state, "api_token_scopes", []) or [])
+                        if getattr(request.state, "api_token", False)
+                        else None
+                    )
 
                     async for chunk in stream_agent_loop(
                         sess.endpoint_url,
@@ -1456,6 +1667,9 @@ def setup_chat_routes(
                         workspace=workspace or None,
                         forced_tools=_forced_tools,
                         uploaded_files=ctx.uploaded_files,
+                        api_token_scopes=_api_token_scopes,
+                        auth_manager=getattr(request.app.state, "auth_manager", None),
+                        execution_origin=ExecutionOrigin.INTERACTIVE_CHAT,
                     ):
                         if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
                             try:
@@ -1464,12 +1678,16 @@ def setup_chat_routes(
                                     # Reasoning tokens arrive flagged thinking:true.
                                     # Forward them for the live indicator, but keep
                                     # them out of the saved reply (same as chat mode).
-                                    if data.get("thinking"):
-                                        thinking_response += data["delta"]
-                                    else:
-                                        full_response += data["delta"]
+                                    safe_delta = reasoning_filter.feed(
+                                        data["delta"], flagged=bool(data.get("thinking"))
+                                    )
+                                    if reasoning_filter.saw_reasoning and not reasoning_status_sent:
+                                        reasoning_status_sent = True
+                                        yield _safe_reasoning_status_event()
+                                    if safe_delta:
+                                        full_response += safe_delta
                                         _stream_set(session, partial=full_response)
-                                    yield chunk
+                                        yield f'data: {json.dumps({"delta": safe_delta})}\n\n'
                                 elif data.get("type") == "web_sources":
                                     web_sources = data.get("data", [])
                                     yield chunk
@@ -1479,12 +1697,15 @@ def setup_chat_routes(
                                     "doc_update", "doc_suggestions", "ui_control",
                                     "rounds_exhausted",
                                     "ask_user",
+                                    "approval_required",
                                     "plan_update",
                                 ):
                                     if data.get("type") == "agent_step":
                                         _agent_rounds = max(_agent_rounds, data.get("round", 1))
                                     elif data.get("type") == "tool_start":
                                         _agent_tool_calls += 1
+                                    elif data.get("type") == "approval_required":
+                                        awaiting_approval_stream = True
                                     yield chunk
                                 elif data.get("type") == "fallback":
                                     # Selected model failed; a fallback answered.
@@ -1516,12 +1737,22 @@ def setup_chat_routes(
                         elif chunk.startswith("event: "):
                             yield chunk
                         elif chunk == "data: [DONE]\n\n":
+                            safe_tail = reasoning_filter.finish()
+                            if safe_tail:
+                                full_response += safe_tail
+                                _stream_set(session, partial=full_response)
+                                yield f'data: {json.dumps({"delta": safe_tail})}\n\n'
                             _has_tool_events = bool((last_metrics or {}).get("tool_events"))
                             if full_response or _has_tool_events:
-                                _response_to_save = full_response or "Done."
+                                _response_to_save = full_response or (
+                                    "Awaiting approval."
+                                    if awaiting_approval_stream
+                                    else "Done."
+                                )
                                 _metrics_to_save = dict(last_metrics or {})
-                                if thinking_response.strip() and not _metrics_to_save.get("thinking"):
-                                    _metrics_to_save["thinking"] = thinking_response.strip()
+                                if reasoning_filter.saw_reasoning:
+                                    _metrics_to_save["reasoning_summary"] = "Model reasoning completed; private chain-of-thought is not displayed."
+                                _metrics_to_save.pop("thinking", None)
                                 _saved_id = save_assistant_response(
                                     sess, session_manager, session, _response_to_save, _metrics_to_save,
                                     character_name=ctx.preset.character_name,
@@ -1532,19 +1763,27 @@ def setup_chat_routes(
                                 )
                                 if _saved_id:
                                     yield f'data: {json.dumps({"type": "message_saved", "id": _saved_id})}\n\n'
-                                run_post_response_tasks(
-                                    sess, session_manager, session, message, _response_to_save,
-                                    _metrics_to_save, ctx.uprefs, memory_manager, memory_vector, webhook_manager,
-                                    incognito=incognito, compare_mode=compare_mode,
-                                    character_name=ctx.preset.character_name,
-                                                            agent_rounds=_agent_rounds,
-                                    agent_tool_calls=_agent_tool_calls,
-                                    skills_manager=skills_manager,
-                                    owner=_user,
-                                    extract_skills=user_requested_agent,
-                                    allow_background_extraction=not tool_policy.block_all_tool_calls,
-                                )
-                            _stream_set(session, status="done")
+                                if not awaiting_approval_stream:
+                                    run_post_response_tasks(
+                                        sess, session_manager, session, message, _response_to_save,
+                                        _metrics_to_save, ctx.uprefs, memory_manager, memory_vector, webhook_manager,
+                                        incognito=incognito, compare_mode=compare_mode,
+                                        character_name=ctx.preset.character_name,
+                                        agent_rounds=_agent_rounds,
+                                        agent_tool_calls=_agent_tool_calls,
+                                        skills_manager=skills_manager,
+                                        owner=_user,
+                                        extract_skills=user_requested_agent,
+                                        allow_background_extraction=not tool_policy.block_all_tool_calls,
+                                    )
+                            _stream_set(
+                                session,
+                                status=(
+                                    "awaiting_approval"
+                                    if awaiting_approval_stream
+                                    else "done"
+                                ),
+                            )
                             yield chunk
                 except (asyncio.CancelledError, GeneratorExit):
                     # Client disconnected — save partial response. Wrap
@@ -1614,6 +1853,7 @@ def setup_chat_routes(
     # ------------------------------------------------------------------ #
     @router.get("/api/chat/resume/{session_id}")
     async def chat_resume(request: Request, session_id: str) -> StreamingResponse:
+        _require_chat_transport_scope(request)
         _verify_session_owner(request, session_id)
         if not agent_runs.is_active(session_id):
             raise HTTPException(404, "No active run for this session")
@@ -1625,6 +1865,7 @@ def setup_chat_routes(
     # ------------------------------------------------------------------ #
     @router.post("/api/chat/stop/{session_id}")
     async def chat_stop(request: Request, session_id: str) -> Dict[str, Any]:
+        _require_chat_transport_scope(request)
         _verify_session_owner(request, session_id)
         stopped = agent_runs.stop(session_id)
         return {"stopped": stopped}
@@ -1634,6 +1875,7 @@ def setup_chat_routes(
     # ------------------------------------------------------------------ #
     @router.get("/api/chat/stream_status/{session_id}")
     async def chat_stream_status(request: Request, session_id: str) -> Dict[str, Any]:
+        _require_chat_transport_scope(request)
         _verify_session_owner(request, session_id)
         # A detached run can still be going even if _active_streams was popped;
         # report it as active so the client knows to reconnect via /resume.
@@ -1715,6 +1957,8 @@ def setup_chat_routes(
         except (KeyError, SessionNotFoundError):
             raise HTTPException(404, "Session not found")
 
+        _enforce_local_only(effective_user(request), sess)
+
         messages = [
             {"role": "system", "content": (
                 "You are rewriting a previous response. Follow the instruction exactly. "
@@ -1729,6 +1973,8 @@ def setup_chat_routes(
 
         async def stream_rewrite() -> AsyncGenerator[str, None]:
             full_response = ""
+            reasoning_filter = _PrivateReasoningFilter()
+            reasoning_status_sent = False
             try:
                 async for chunk in stream_llm(
                     sess.endpoint_url,
@@ -1752,14 +1998,24 @@ def setup_chat_routes(
                                 # tokens into the saved rewrite — only real
                                 # content. reasoning_content arrives flagged
                                 # with thinking:true.
-                                if not data.get("thinking"):
-                                    full_response += data["delta"]
-                                yield chunk
+                                safe_delta = reasoning_filter.feed(
+                                    data["delta"], flagged=bool(data.get("thinking"))
+                                )
+                                if reasoning_filter.saw_reasoning and not reasoning_status_sent:
+                                    reasoning_status_sent = True
+                                    yield _safe_reasoning_status_event()
+                                if safe_delta:
+                                    full_response += safe_delta
+                                    yield f'data: {json.dumps({"delta": safe_delta})}\n\n'
                         except json.JSONDecodeError:
                             yield chunk
                     elif chunk.startswith("event: "):
                         yield chunk
                     elif chunk == "data: [DONE]\n\n":
+                        safe_tail = reasoning_filter.finish()
+                        if safe_tail:
+                            full_response += safe_tail
+                            yield f'data: {json.dumps({"delta": safe_tail})}\n\n'
                         # Update the last assistant message in session history.
                         # Strip reasoning-model <think> blocks so the persisted
                         # rewrite is just the rewritten text, not its scratchpad.

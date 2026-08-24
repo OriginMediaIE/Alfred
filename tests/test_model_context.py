@@ -224,6 +224,45 @@ class TestGetContextLength:
         assert second == 27000
         assert len(calls) == 2
 
+    def test_local_ollama_profile_context_overrides_advertised_maximum(self, monkeypatch):
+        calls = []
+
+        def fake_get(url, *args, **kwargs):
+            calls.append(("get", url))
+            if url.endswith("/slots"):
+                return _FakeResp({}, ok=False)
+            return _FakeResp({"models": [{"name": "om-agent:qwen3.5-9b"}]})
+
+        def fake_post(url, *args, **kwargs):
+            calls.append(("post", url, kwargs.get("json")))
+            return _FakeResp({"parameters": "temperature 0.1\nnum_ctx 32768\ntop_p 0.9"})
+
+        monkeypatch.setattr(model_context.httpx, "get", fake_get)
+        monkeypatch.setattr(model_context.httpx, "post", fake_post)
+
+        result = model_context._query_context_length(
+            "http://127.0.0.1:11434/api", "om-agent:qwen3.5-9b"
+        )
+
+        assert result == (32768, True)
+        assert ("post", "http://127.0.0.1:11434/api/show", {"model": "om-agent:qwen3.5-9b"}) in calls
+
+    def test_non_ollama_local_endpoint_does_not_receive_show_probe(self, monkeypatch):
+        def fake_get(url, *args, **kwargs):
+            if url.endswith("/slots"):
+                return _FakeResp([{"n_ctx": 8192}])
+            raise AssertionError(url)
+
+        def fake_post(*args, **kwargs):
+            raise AssertionError("non-Ollama endpoint must not receive /api/show")
+
+        monkeypatch.setattr(model_context.httpx, "get", fake_get)
+        monkeypatch.setattr(model_context.httpx, "post", fake_post)
+
+        assert model_context._query_context_length(
+            "http://127.0.0.1:8080/v1", "local-model"
+        ) == (8192, True)
+
     def test_remote_endpoint_keeps_cached_context(self, monkeypatch):
         calls = []
 

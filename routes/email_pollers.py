@@ -24,6 +24,7 @@ import re
 import html
 import logging
 import inspect
+import hashlib
 from datetime import datetime
 
 from email.mime.text import MIMEText
@@ -43,6 +44,42 @@ from routes.email_helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _propose_email_calendar_action(owner, arguments, *, message_id, index):
+    """Create one exact background-monitor proposal without executing it."""
+
+    from src.action_ledger import get_action_ledger
+    from src.tool_actions import build_action_envelope
+    from src.tool_authorization import ExecutionOrigin, ResolvedToolIdentity
+    from src.tool_registry import ToolSurface, build_builtin_registry
+
+    definition = build_builtin_registry().resolve(
+        "manage_calendar", surface=ToolSurface.INTERNAL
+    )
+    identity = ResolvedToolIdentity(
+        requested_name="manage_calendar",
+        canonical_name="manage_calendar",
+        definition=definition,
+        surface=ToolSurface.INTERNAL,
+    )
+    source_hash = hashlib.sha256(str(message_id).encode("utf-8")).hexdigest()[:24]
+    envelope = build_action_envelope(
+        identity,
+        json.dumps(arguments, ensure_ascii=False, separators=(",", ":")),
+        owner=owner,
+        session_id=None,
+        request_id=f"email-calendar:{source_hash}:{int(index)}",
+        origin=ExecutionOrigin.BACKGROUND_MONITOR,
+    )
+    return get_action_ledger().propose(
+        envelope,
+        risk_level=int(definition.effective_risk),
+        approval_reason=(
+            "An untrusted email suggested this calendar change; exact approval is required."
+        ),
+        origin=ExecutionOrigin.BACKGROUND_MONITOR.value,
+    )
 
 # Recovers a `[{"action": ...}, ...]` JSON array from raw LLM output when the
 # fenced-block strip leaves nothing usable. Runs on model output influenced by
@@ -624,8 +661,7 @@ async def _auto_summarize_pass_single(days_back: int = 1, account_id: str | None
                                 _cal_parse_ok = True
                                 logger.info(f"[cal-extract] parsed {len(ops)} op(s)")
                                 if isinstance(ops, list) and ops:
-                                    from src.tool_implementations import do_manage_calendar
-                                    for op in ops[:3]:
+                                    for _op_index, op in enumerate(ops[:3]):
                                         action = (op.get("action") or "").lower()
                                         if action == "noop":
                                             continue
@@ -633,12 +669,18 @@ async def _auto_summarize_pass_single(days_back: int = 1, account_id: str | None
                                             cuid = op.get("uid")
                                             if not cuid:
                                                 continue
-                                            r = await do_manage_calendar(json.dumps({"action": "delete_event", "uid": cuid}), owner=_acct_owner)
-                                            if r.get("exit_code", 0) == 0:
-                                                logger.info(f"[cal-extract] Cancelled event uid={cuid}")
-                                                _cal_run_count += 1
-                                            else:
-                                                logger.warning(f"[cal-extract] cancel failed: {r.get('error')}")
+                                            proposal = _propose_email_calendar_action(
+                                                _acct_owner,
+                                                {"action": "delete_event", "uid": cuid},
+                                                message_id=message_id,
+                                                index=_op_index,
+                                            )
+                                            logger.info(
+                                                "[cal-extract] Proposed event cancellation uid=%s approval=%s",
+                                                cuid,
+                                                proposal["id"],
+                                            )
+                                            _cal_run_count += 1
                                         elif action == "update":
                                             cuid = op.get("uid")
                                             if not cuid or not op.get("date"):
@@ -648,14 +690,18 @@ async def _auto_summarize_pass_single(days_back: int = 1, account_id: str | None
                                             if op.get("title"): args["summary"] = op["title"]
                                             if op.get("description"):
                                                 args["description"] = f"[Updated from email] {op['description']} (from: {sender})"
-                                            r = await do_manage_calendar(json.dumps(args), owner=_acct_owner)
-                                            if r.get("exit_code", 0) == 0:
-                                                logger.info(f"[cal-extract] Updated event uid={cuid} → {op.get('title')} {op['date']}")
-                                                if cuid and cuid not in _cal_event_uids:
-                                                    _cal_event_uids.append(cuid)
-                                                _cal_run_count += 1
-                                            else:
-                                                logger.warning(f"[cal-extract] update failed: {r.get('error')}")
+                                            proposal = _propose_email_calendar_action(
+                                                _acct_owner,
+                                                args,
+                                                message_id=message_id,
+                                                index=_op_index,
+                                            )
+                                            logger.info(
+                                                "[cal-extract] Proposed event update uid=%s approval=%s",
+                                                cuid,
+                                                proposal["id"],
+                                            )
+                                            _cal_run_count += 1
                                         else:  # create (default)
                                             if not op.get("title") or not op.get("date"):
                                                 continue
@@ -722,24 +768,26 @@ async def _auto_summarize_pass_single(days_back: int = 1, account_id: str | None
                                                     _desc_parts.append(_lnk)
                                             except Exception:
                                                 pass
-                                            cal_args = json.dumps({
+                                            cal_args = {
                                                 "action": "create_event",
                                                 "summary": op["title"],
                                                 "dtstart": op["date"],
                                                 "dtend": _dtend,
                                                 "location": _loc,
                                                 "description": "\n\n".join(filter(None, _desc_parts)),
-                                            })
-                                            r = await do_manage_calendar(cal_args, owner=_acct_owner)
-                                            if r.get("exit_code", 0) == 0:
-                                                logger.info(f"[cal-extract] Created event: {op['title']} on {op['date']}")
-                                                _created_uid = (r.get("uid") or "").strip()
-                                                if _created_uid and _created_uid not in _cal_event_uids:
-                                                    _cal_event_uids.append(_created_uid)
-                                                _events_created += 1
-                                                _cal_run_count += 1
-                                            else:
-                                                logger.warning(f"[cal-extract] create failed: {r.get('error')} args={cal_args[:200]}")
+                                            }
+                                            proposal = _propose_email_calendar_action(
+                                                _acct_owner,
+                                                cal_args,
+                                                message_id=message_id,
+                                                index=_op_index,
+                                            )
+                                            logger.info(
+                                                "[cal-extract] Proposed event creation title=%r approval=%s",
+                                                op["title"],
+                                                proposal["id"],
+                                            )
+                                            _cal_run_count += 1
                             except Exception as je:
                                 logger.warning(f"[cal-extract] JSON parse failed: {je} on raw={cal_extract[:200]!r}")
                         else:
@@ -840,7 +888,7 @@ async def _auto_summarize_pass_single(days_back: int = 1, account_id: str | None
                                     cfg = _get_email_config(account_id, owner=account_owner)
                                     to_addr = cfg["from_address"]  # self-email
 
-                                    # Deep-link to open the original email in Odysseus (if public URL is configured).
+                                    # Deep-link to open the original email in OM Automate (if public URL is configured).
                                     # Hash format `#email=FOLDER:UID` is handled by static/js/emailInbox.js:_maybeOpenFromHash.
                                     from src.settings import load_settings as _ls
                                     _pub = (_ls().get("app_public_url") or "").rstrip("/")
@@ -852,7 +900,7 @@ async def _auto_summarize_pass_single(days_back: int = 1, account_id: str | None
                                     alert_body = (
                                         f"Your AI assistant flagged this email as {urgency.upper()} urgency.\n\n"
                                         f"Reason: {reason}\n\n"
-                                        + (f"Open in Odysseus: {open_url}\n\n" if open_url else "")
+                                        + (f"Open in OM Automate: {open_url}\n\n" if open_url else "")
                                         + f"---\n"
                                         f"From: {sender}\n"
                                         f"Subject: {subject}\n"
@@ -860,14 +908,14 @@ async def _auto_summarize_pass_single(days_back: int = 1, account_id: str | None
                                         f"{body[:800]}"
                                         + ("..." if len(body or "") > 800 else "")
                                     )
-                                    # HTML alternative with a clickable "Open in Odysseus" button
+                                    # HTML alternative with a clickable "Open in OM Automate" button
                                     import html as _h
                                     body_excerpt = _h.escape((body or "")[:800])
                                     open_html = (
                                         f'<p><a href="{_h.escape(open_url)}" '
                                         'style="display:inline-block;padding:8px 14px;background:#50fa7b;'
                                         'color:#000;text-decoration:none;border-radius:4px;font-weight:bold">'
-                                        'Open in Odysseus</a></p>'
+                                        'Open in OM Automate</a></p>'
                                     ) if open_url else ""
                                     alert_html = (
                                         f'<div style="font-family:system-ui,sans-serif;max-width:640px">'

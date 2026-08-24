@@ -24,6 +24,17 @@ def _make_block(tool_type, content):
     return SimpleNamespace(tool_type=tool_type, content=content)
 
 
+def _file_authority(*permissions):
+    from src.tool_authorization import ExecutionAuthority
+    from src.tool_registry import ToolSurface
+
+    return ExecutionAuthority(
+        owner="admin-user",
+        permissions=frozenset(permissions),
+        surface=ToolSurface.FENCE,
+    )
+
+
 # ── Unit tests on _is_sensitive_path ──────────────────────────────────
 
 def test_sensitive_ssh_dir():
@@ -161,17 +172,19 @@ def test_blocks_netrc():
         _resolve_tool_path("~/.netrc")
 
 
-def test_allows_project_data(tmp_path):
-    """Paths under project data/ must resolve cleanly."""
-    from src.tool_execution import _resolve_tool_path
+def test_allows_dedicated_agent_workspace_but_blocks_control_plane_data(tmp_path):
+    """Only the dedicated workspace, never broad application data, is allowed."""
+    from src.tool_execution import _AGENT_WORKDIR, _resolve_tool_path
     from src.constants import DATA_DIR
-    target = os.path.join(DATA_DIR, "test-confinement-ok.txt")
-    os.makedirs(DATA_DIR, exist_ok=True)
+    target = os.path.join(_AGENT_WORKDIR, "test-confinement-ok.txt")
+    os.makedirs(_AGENT_WORKDIR, exist_ok=True)
     with open(target, "w") as f:
         f.write("ok")
     try:
         resolved = _resolve_tool_path(target)
         assert resolved == os.path.realpath(target)
+        with pytest.raises(ValueError,match="outside the allowed roots"):
+            _resolve_tool_path(os.path.join(DATA_DIR,"auth.json"))
     finally:
         os.unlink(target)
 
@@ -242,6 +255,7 @@ async def test_read_file_dispatch_blocks_etc_shadow(monkeypatch):
     desc, result = await execute_tool_block(
         _make_block("read_file", "/etc/shadow"),
         owner="admin-user",
+        authority=_file_authority("files.read"),
     )
     assert "outside the allowed roots" in (result.get("error") or "")
     assert result.get("exit_code") == 1
@@ -270,6 +284,7 @@ async def test_write_file_dispatch_blocks_authorized_keys(monkeypatch):
     desc, result = await execute_tool_block(
         _make_block("write_file", "~/.ssh/authorized_keys\nssh-rsa AAAAB3..."),
         owner="admin-user",
+        authority=_file_authority("files.write"),
     )
     assert "sensitive directory" in (result.get("error") or "")
     assert result.get("exit_code") == 1
@@ -298,6 +313,7 @@ async def test_write_file_dispatch_blocks_cron(monkeypatch):
     desc, result = await execute_tool_block(
         _make_block("write_file", "/etc/cron.d/agent-payload\n* * * * * root /tmp/p\n"),
         owner="admin-user",
+        authority=_file_authority("files.write"),
     )
     assert "outside the allowed roots" in (result.get("error") or "")
     assert result.get("exit_code") == 1

@@ -58,6 +58,23 @@ def test_promote_sets_admin_flag_and_admin_privileges(tmp_path):
     assert mgr.users["bob"]["privileges"] == auth_mod.ADMIN_PRIVILEGES
 
 
+def test_admin_can_disable_granular_agent_capabilities_only(tmp_path):
+    auth_mod, mgr = _fresh_auth_manager(tmp_path)
+    assert mgr.create_user("admin", "pw-123456", is_admin=True) is True
+
+    assert mgr.set_privileges(
+        "admin",
+        {
+            "can_use_agent": False,
+            "denied_tool_permissions": ["email.send", "shell.execute", "unknown"],
+        },
+    ) is True
+
+    privileges = mgr.get_privileges("admin")
+    assert privileges["can_use_agent"] is True
+    assert privileges["denied_tool_permissions"] == ["email.send", "shell.execute"]
+
+
 def test_demote_with_two_admins_resets_to_default_privileges(tmp_path):
     auth_mod, mgr = _fresh_auth_manager(tmp_path)
     mgr.create_user("admin", "pw-123456", is_admin=True)

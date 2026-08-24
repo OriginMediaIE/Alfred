@@ -103,8 +103,10 @@ def test_docker_entrypoint_does_not_resolve_root_commands_from_app_local_path():
 def test_docker_entrypoint_ownership_repair_stays_inside_expected_mounts():
     script = (ROOT / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
     assert "find /app -xdev" in script
-    for path in ("/app/data", "/app/logs", "/app/.ssh", "/app/.cache", "/app/.local"):
+    for path in ("/app/data", "/app/.ssh", "/app/.cache", "/app/.local"):
         assert f"-path {path}" in script
+    assert "/app/data/logs" in script
+    assert "-path /app/logs" not in script
     assert "mount_root_for" in script
     assert "is_broad_mount_root" in script
     assert "Skipping recursive ownership repair" in script

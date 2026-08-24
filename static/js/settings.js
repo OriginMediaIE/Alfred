@@ -2315,6 +2315,181 @@ function initAccount() {
   }
 }
 
+function initSecuritySessions() {
+  const root = el('settings-active-sessions');
+  if (!root) return;
+  async function loadSessions() {
+    try {
+      const response = await fetch('/api/auth/sessions', { credentials: 'same-origin' });
+      if (!response.ok) throw new Error('Could not load sessions');
+      const data = await response.json();
+      const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+      root.innerHTML = sessions.length ? sessions.map(item => {
+        const agent = String(item.user_agent || 'Unknown browser').slice(0, 140);
+        const address = item.ip ? ` · ${esc(item.ip)}` : '';
+        const seen = item.last_seen ? new Date(item.last_seen).toLocaleString() : 'Unknown';
+        return `<div class="admin-toggle-row" data-login-session="${esc(item.id)}">
+          <div><div class="admin-toggle-label">${esc(agent)}${item.current ? ' · This device' : ''}</div>
+          <div class="admin-toggle-sub">Last seen ${esc(seen)}${address}</div></div>
+          <button type="button" class="admin-btn-delete" data-revoke-session="${esc(item.id)}">Revoke</button>
+        </div>`;
+      }).join('') : '<div class="admin-empty">No active sessions.</div>';
+      root.querySelectorAll('[data-revoke-session]').forEach(button => {
+        button.addEventListener('click', async () => {
+          button.disabled = true;
+          try {
+            const result = await fetch(`/api/auth/sessions/${encodeURIComponent(button.dataset.revokeSession)}`, {
+              method: 'DELETE', credentials: 'same-origin',
+            });
+            if (!result.ok) throw new Error((await result.json()).detail || 'Revoke failed');
+            const payload = await result.json();
+            if (payload.current) { window.location.href = '/login'; return; }
+            await loadSessions();
+          } catch (error) {
+            button.disabled = false;
+            if (uiModule.showToast) uiModule.showToast(error.message || 'Revoke failed');
+          }
+        });
+      });
+    } catch (error) {
+      root.innerHTML = `<div class="admin-empty">${esc(error.message || 'Could not load sessions')}</div>`;
+    }
+  }
+  loadSessions();
+}
+
+function initPrivacySettings() {
+  const panel = modalEl && modalEl.querySelector('[data-settings-panel="privacy"]');
+  if (!panel) return;
+  const fieldIds = {
+    conversation_retention_days: 'privacy-retention-conversation',
+    email_retention_days: 'privacy-retention-email',
+    transcript_retention_days: 'privacy-retention-transcript',
+    file_retention_days: 'privacy-retention-file',
+    memory_retention_days: 'privacy-retention-memory',
+  };
+  const integrationRoot = el('privacy-integrations');
+  let settings = null;
+
+  async function loadPrivacy() {
+    const [privacyResponse, catalogResponse] = await Promise.all([
+      fetch('/api/privacy', { credentials: 'same-origin' }),
+      fetch('/api/integration-registry/catalog', { credentials: 'same-origin' }),
+    ]);
+    if (!privacyResponse.ok) throw new Error('Could not load privacy settings');
+    settings = await privacyResponse.json();
+    window._omProviderRoutingVisible = settings.provider_routing_visibility !== false;
+    el('privacy-local-only').checked = !!settings.local_only_mode;
+    el('privacy-routing-visible').checked = !!settings.provider_routing_visibility;
+    el('privacy-redaction').checked = !!settings.sensitive_data_redaction;
+    el('privacy-model-logging').checked = !!settings.model_logging_enabled;
+    el('privacy-telemetry').checked = !!settings.telemetry_enabled;
+    Object.entries(fieldIds).forEach(([key, id]) => {
+      el(id).value = settings[key] == null ? '' : String(settings[key]);
+    });
+    if (!catalogResponse.ok) throw new Error('Could not load integration controls');
+    const catalog = await catalogResponse.json();
+    const rows = Array.isArray(catalog.integrations) ? catalog.integrations : [];
+    integrationRoot.innerHTML = rows.length ? rows.map(item => `<div class="admin-toggle-row">
+      <div><div class="admin-toggle-label">${esc(item.name)}</div><div class="admin-toggle-sub">${esc((item.capabilities || []).join(', ') || 'Connector')}</div></div>
+      <label class="admin-switch"><input type="checkbox" data-privacy-integration="${esc(item.id)}" ${item.enabled !== false ? 'checked' : ''}><span class="admin-slider"></span></label>
+    </div>`).join('') : '<div class="admin-empty">No integrations registered.</div>';
+  }
+
+  el('privacy-save')?.addEventListener('click', async () => {
+    const button = el('privacy-save');
+    const message = el('privacy-save-msg');
+    const payload = {
+      local_only_mode: el('privacy-local-only').checked,
+      provider_routing_visibility: el('privacy-routing-visible').checked,
+      sensitive_data_redaction: el('privacy-redaction').checked,
+      model_logging_enabled: el('privacy-model-logging').checked,
+      telemetry_enabled: el('privacy-telemetry').checked,
+      integration_controls: {},
+    };
+    Object.entries(fieldIds).forEach(([key, id]) => {
+      const raw = el(id).value.trim();
+      payload[key] = raw === '' ? null : Number(raw);
+    });
+    integrationRoot.querySelectorAll('[data-privacy-integration]').forEach(input => {
+      payload.integration_controls[input.dataset.privacyIntegration] = input.checked;
+    });
+    button.disabled = true; message.textContent = 'Saving…'; message.style.color = '';
+    try {
+      const response = await fetch('/api/privacy', {
+        method: 'PUT', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      });
+      if (!response.ok) throw new Error((await response.json()).detail || 'Save failed');
+      settings = await response.json();
+      window._omProviderRoutingVisible = settings.provider_routing_visibility !== false;
+      message.textContent = 'Privacy settings saved'; message.style.color = 'var(--green)';
+      window.dispatchEvent(new CustomEvent('om-privacy-changed', { detail: settings }));
+    } catch (error) {
+      message.textContent = error.message || 'Save failed'; message.style.color = 'var(--red)';
+    } finally { button.disabled = false; }
+  });
+  loadPrivacy().catch(error => {
+    el('privacy-save-msg').textContent = error.message;
+    el('privacy-save-msg').style.color = 'var(--red)';
+  });
+}
+
+function initSystemBackup() {
+  const fileInput = el('system-backup-file');
+  const passphrase = el('system-backup-passphrase');
+  const message = el('system-backup-msg');
+  const restoreButton = el('system-backup-restore');
+  if (!fileInput || !passphrase || !message || !restoreButton) return;
+  let selectedFile = null;
+  const show = (text, error = false) => { message.textContent = text; message.style.color = error ? 'var(--red)' : ''; };
+  const hasStrongPassphrase = () => {
+    if (passphrase.value.length >= 12) return true;
+    show('Enter a backup passphrase of at least 12 characters.', true);
+    return false;
+  };
+  el('system-backup-create')?.addEventListener('click', async () => {
+    if (!hasStrongPassphrase()) return;
+    const form = new FormData(); form.append('passphrase', passphrase.value);
+    show('Creating a consistent database snapshot…');
+    try {
+      const response = await fetch('/api/system-backups/create', { method: 'POST', credentials: 'same-origin', body: form });
+      if (!response.ok) throw new Error((await response.json()).detail || 'Backup failed');
+      const blob = await response.blob(); const href = URL.createObjectURL(blob);
+      const link = document.createElement('a'); link.href = href;
+      link.download = 'alfred-privateos-backup.ombak';
+      link.click(); setTimeout(() => URL.revokeObjectURL(href), 1000);
+      show(`Backup downloaded (${response.headers.get('X-OM-Backup-Files') || '?'} files).`);
+    } catch (error) { show(error.message || 'Backup failed', true); }
+  });
+  el('system-backup-select')?.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', async () => {
+    selectedFile = fileInput.files && fileInput.files[0]; restoreButton.disabled = true;
+    if (!selectedFile) return;
+    if (!hasStrongPassphrase()) { selectedFile = null; fileInput.value = ''; return; }
+    const form = new FormData(); form.append('file', selectedFile); form.append('passphrase', passphrase.value);
+    show('Validating checksums, databases, and restore paths…');
+    try {
+      const response = await fetch('/api/system-backups/preview', { method: 'POST', credentials: 'same-origin', body: form });
+      if (!response.ok) throw new Error((await response.json()).detail || 'Backup validation failed');
+      const preview = await response.json(); restoreButton.disabled = false;
+      show(`Portable backup passed preflight: ${preview.file_count} files and ${preview.database_checks.length} databases.`);
+    } catch (error) { selectedFile = null; show(error.message || 'Backup validation failed', true); }
+  });
+  restoreButton.addEventListener('click', async () => {
+    if (!selectedFile) return;
+    if (!hasStrongPassphrase()) return;
+    if (!window.confirm('Stage this validated backup for restore on the next OM Automate restart? Current files will be preserved in the restore rollback directory.')) return;
+    const form = new FormData(); form.append('file', selectedFile); form.append('passphrase', passphrase.value); form.append('confirm', 'true');
+    restoreButton.disabled = true; show('Staging restore…');
+    try {
+      const response = await fetch('/api/system-backups/stage-restore', { method: 'POST', credentials: 'same-origin', body: form });
+      if (!response.ok) throw new Error((await response.json()).detail || 'Restore staging failed');
+      show('Restore staged. Restart OM Automate to apply it.');
+    } catch (error) { restoreButton.disabled = false; show(error.message || 'Restore staging failed', true); }
+  });
+}
+
 function initAll() {
   modalEl = el('settings-modal');
   initTabs();
@@ -2337,6 +2512,9 @@ function initAll() {
   initAppearance();
   initShortcuts();
   initAccount();
+  initSecuritySessions();
+  initPrivacySettings();
+  initSystemBackup();
   initIntegrations();
   initEmailSettings();
   initEmailAccountsSettings();
@@ -2574,7 +2752,7 @@ async function initReminderSettings() {
   // regardless of channel). The hint should make that clear so
   // users don't think they have to choose between channels.
   const CHANNEL_HINTS = {
-    browser: 'Reminders appear as browser notifications inside Odysseus.',
+    browser: 'Reminders appear as browser notifications inside OM Automate.',
     email: 'Reminders are emailed and shown as a browser notification.',
     ntfy: 'Reminders are pushed via ntfy AND shown as a browser notification.',
     webhook: 'Reminders are POSTed to the selected integration AND shown as a browser notification. Use {{title}} and {{message}} in the payload template.',
@@ -2930,9 +3108,9 @@ async function initEmailAccountsSettings() {
         <div class="settings-row"><label class="settings-label">Email${_hint('Your email address. Used as the From: header on outgoing mail and as the display label when Name is blank.')}</label><input id="eaf-from" class="settings-input" placeholder="you@example.com" value="${esc(a.from_address || '')}"></div>
         <div class="settings-row"><label class="settings-label">Display Name${_hint('Your name as it appears in the From: field of emails you send, e.g. Jane Smith. Auto-filled from Google during OAuth.')}</label><input id="eaf-display-name" class="settings-input" placeholder="Your Name" value="${esc(a.display_name || '')}"></div>
         <div id="eaf-oauth-section" style="display:none;margin:8px 0;padding:10px;border:1px solid var(--border);border-radius:6px;background:color-mix(in srgb,var(--accent,#50fa7b) 6%,transparent)">
-          <div style="font-size:11px;font-weight:600;margin-bottom:6px">Google OAuth2 — required for Workspace / .edu accounts</div>
-          <div id="eaf-oauth-status" style="font-size:11px;opacity:0.7;margin-bottom:6px">${a.oauth_provider === 'google' ? '✓ Connected via Google OAuth' : 'Not connected — click below to authorize'}</div>
-          <button type="button" id="eaf-oauth-btn" class="admin-btn-add" style="font-size:11px">${a.oauth_provider === 'google' ? 'Reconnect with Google' : 'Connect with Google'}</button>
+          <div style="font-size:11px;font-weight:600;margin-bottom:6px">Google Workspace uses the secure Gmail API</div>
+          <div id="eaf-oauth-status" style="font-size:11px;opacity:0.7;margin-bottom:6px">Legacy IMAP OAuth has been retired. Connect Gmail and Calendar as a first-class Google Workspace integration.</div>
+          <button type="button" id="eaf-oauth-btn" class="admin-btn-add" style="font-size:11px">Open Google Workspace setup</button>
         </div>
         <div style="font-size:11px;font-weight:600;opacity:0.6;margin:6px 0 2px">IMAP (Receiving)</div>
         <div class="settings-row"><label class="settings-label">Host${_hint('Your IMAP server, e.g. imap.gmail.com, imap.migadu.com, a LAN host, or a Tailscale IP for Dovecot.')}</label><input id="eaf-imap-host" class="settings-input" value="${esc(a.imap_host || '')}"></div>
@@ -2974,7 +3152,7 @@ async function initEmailAccountsSettings() {
     const eafProviderNotes = {
       outlook: {
         title: 'Outlook / Office 365 needs OAuth',
-        body: 'Microsoft disables normal password login for IMAP/SMTP in most Outlook and Microsoft 365 accounts. Odysseus does not support Microsoft OAuth/Graph mail yet, so this preset is only a placeholder for future support.',
+        body: 'Microsoft disables normal password login for IMAP/SMTP in most Outlook and Microsoft 365 accounts. OM Automate does not support Microsoft OAuth/Graph mail yet, so this preset is only a placeholder for future support.',
       },
     };
     const eafNoteEl = el('eaf-provider-note');
@@ -3008,28 +3186,9 @@ async function initEmailAccountsSettings() {
     // Init OAuth UI for accounts already connected via OAuth.
     if (a.oauth_provider === 'google') _syncOauthUI('google_workspace');
 
-    // "Connect with Google" button — save the account first, then redirect to OAuth.
-    el('eaf-oauth-btn').addEventListener('click', async () => {
-      // Must save the account first to get an account_id to pass to the OAuth flow.
-      const body = {
-        name: el('eaf-name').value.trim() || el('eaf-from').value.trim(),
-        from_address: el('eaf-from').value.trim(),
-        imap_host: el('eaf-imap-host').value.trim(),
-        imap_port: parseInt(el('eaf-imap-port').value) || 993,
-        imap_user: el('eaf-imap-user').value.trim(),
-        imap_starttls: el('eaf-imap-starttls').checked,
-        smtp_host: el('eaf-smtp-host').value.trim(),
-        smtp_port: parseInt(el('eaf-smtp-port').value) || 587,
-        smtp_user: el('eaf-imap-user').value.trim(),
-      };
-      if (!body.name) { el('eaf-msg').textContent = 'Enter a Name or Email first'; el('eaf-msg').style.color = 'var(--red)'; return; }
-      const url = isEdit ? `/api/email/accounts/${a.id}` : '/api/email/accounts';
-      const method = isEdit ? 'PUT' : 'POST';
-      const r = await fetch(url, { method, credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      const d = await r.json();
-      if (!d.ok) { el('eaf-msg').textContent = d.error || 'Save failed'; el('eaf-msg').style.color = 'var(--red)'; return; }
-      const accId = isEdit ? a.id : d.id;
-      window.location.href = `/api/email/oauth/google/authorize?account_id=${encodeURIComponent(accId)}`;
+    el('eaf-oauth-btn').addEventListener('click', () => {
+      open('integrations');
+      window.dispatchEvent(new CustomEvent('om-open-google-workspace-settings'));
     });
     el('eaf-smtp-security').value = _smtpSecurity(a);
 
@@ -3493,6 +3652,7 @@ const INTG_TYPES = {
   contacts: { label: 'Contacts', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>' },
   carddav: { label: 'CardDAV', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>' },
   email:   { label: 'Email',   icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>' },
+  google:  { label: 'Google',  icon: '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" d="M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.9h5.4a4.6 4.6 0 0 1-2 3v2.6h3.3c1.9-1.8 2.9-4.4 2.9-7.5Z"/><path fill="#34A853" d="M12 22c2.7 0 5-.9 6.7-2.3l-3.3-2.6c-.9.6-2.1 1-3.4 1a5.9 5.9 0 0 1-5.5-4.1H3.1v2.7A10 10 0 0 0 12 22Z"/><path fill="#FBBC05" d="M6.5 14a6 6 0 0 1 0-3.9V7.4H3.1a10 10 0 0 0 0 9.3L6.5 14Z"/><path fill="#EA4335" d="M12 6a5.4 5.4 0 0 1 3.8 1.5l2.9-2.8A9.7 9.7 0 0 0 12 2a10 10 0 0 0-8.9 5.4l3.4 2.7A5.9 5.9 0 0 1 12 6Z"/></svg>' },
   mcp:     { label: 'MCP',     icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>' },
   codex:   { label: 'Codex',   icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M22.282 9.821a5.985 5.985 0 0 0-.516-4.91 6.046 6.046 0 0 0-6.51-2.9A6.065 6.065 0 0 0 10.696.453a6.023 6.023 0 0 0-5.75 4.172 6.061 6.061 0 0 0-3.946 2.945 6.024 6.024 0 0 0 .742 7.099 5.98 5.98 0 0 0 .516 4.911 6.046 6.046 0 0 0 6.51 2.9A5.996 5.996 0 0 0 13.26 23.547a6.023 6.023 0 0 0 5.75-4.172 6.061 6.061 0 0 0 3.946-2.945 6.024 6.024 0 0 0-.674-6.609zM13.26 21.047a4.508 4.508 0 0 1-2.886-1.041l.143-.082 4.793-2.769a.777.777 0 0 0 .391-.676V10.34l2.026 1.17a.072.072 0 0 1 .039.061v5.596a4.532 4.532 0 0 1-4.506 4.48zM3.968 17.64a4.473 4.473 0 0 1-.537-3.018l.143.086 4.793 2.769a.79.79 0 0 0 .782 0l5.852-3.379v2.34a.072.072 0 0 1-.029.062l-4.845 2.796a4.532 4.532 0 0 1-6.159-1.656zM2.804 7.922a4.49 4.49 0 0 1 2.348-1.973V11.6a.778.778 0 0 0 .391.676l5.852 3.378-2.026 1.17a.072.072 0 0 1-.068 0L4.456 14.03a4.532 4.532 0 0 1-1.652-6.108zm16.423 3.823L13.375 8.367l2.026-1.17a.072.072 0 0 1 .068 0l4.845 2.796a4.525 4.525 0 0 1-.7 8.08V12.42a.778.778 0 0 0-.387-.676zm2.015-3.025l-.143-.086-4.793-2.769a.79.79 0 0 0-.782 0L9.672 9.243V6.903a.072.072 0 0 1 .029-.062l4.845-2.796a4.525 4.525 0 0 1 6.696 4.675zM8.598 12.66L6.57 11.49a.072.072 0 0 1-.039-.061V5.833a4.525 4.525 0 0 1 7.413-3.48l-.143.082-4.793 2.769a.777.777 0 0 0-.391.676l-.019 6.78zm1.1-2.379l2.607-1.505 2.607 1.505v3.01l-2.607 1.505-2.607-1.505z"/></svg>' },
   claude:  { label: 'Claude',  icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"/></svg>' },
@@ -3568,6 +3728,13 @@ async function initUnifiedIntegrations() {
   const addBtn = el('unified-intg-add-btn');
   if (!listEl) return;
   let integrationNotice = '';
+  if (!listEl.dataset.googleOpenWired) {
+    listEl.dataset.googleOpenWired = '1';
+    window.addEventListener('om-open-google-workspace-settings', () => {
+      if (formEl) formEl.style.display = '';
+      showGoogleForm('new');
+    });
+  }
 
   // Hide the "+ Add Integration" button whenever the per-type create form
   // is open so it doesn't compete visually with the in-progress form.
@@ -3589,7 +3756,7 @@ async function initUnifiedIntegrations() {
   }
 
   async function fetchAll() {
-    const [apiRes, calRes, cardRes, contactsRes, emailAccountsRes, mcpRes, vaultRes, tokenRes, calendarsRes] = await Promise.all([
+    const [apiRes, calRes, cardRes, contactsRes, emailAccountsRes, mcpRes, vaultRes, tokenRes, calendarsRes, googleRes] = await Promise.all([
       fetch('/api/auth/integrations', { credentials: 'same-origin' }).then(r => r.ok ? r.json() : { integrations: [] }).catch(() => ({ integrations: [] })),
       fetch('/api/calendar/config/accounts', { credentials: 'same-origin' }).then(r => r.ok ? r.json() : { accounts: [] }).catch(() => ({ accounts: [] })),
       fetch('/api/contacts/config', { credentials: 'same-origin' }).then(r => r.ok ? r.json() : {}).catch(() => ({})),
@@ -3599,6 +3766,7 @@ async function initUnifiedIntegrations() {
       fetch('/api/vault/config', { credentials: 'same-origin' }).then(r => r.ok ? r.json() : {}).catch(() => ({})),
       fetch('/api/tokens', { credentials: 'same-origin' }).then(r => r.ok ? r.json() : []).catch(() => []),
       fetch('/api/calendar/calendars', { credentials: 'same-origin' }).then(r => r.ok ? r.json() : { calendars: [] }).catch(() => ({ calendars: [] })),
+      fetch('/api/integrations/google/connections', { credentials: 'same-origin' }).then(r => r.ok ? r.json() : { connections: [] }).catch(() => ({ connections: [] })),
     ]);
     const items = [];
     // API integrations
@@ -3636,6 +3804,15 @@ async function initUnifiedIntegrations() {
       const label = acc.name + (acc.is_default ? ' (default)' : '');
       const detail = [acc.from_address || acc.imap_user, acc.imap_host].filter(Boolean).join(' — ');
       items.push({ type: 'email', id: acc.id, name: label, detail, enabled: acc.enabled !== false, data: acc });
+    }
+    // Google Workspace — one owner-scoped card per connected identity. Tokens
+    // and client secrets are intentionally never returned to this surface.
+    for (const conn of (googleRes.connections || [])) {
+      if (conn.status === 'revoked' || conn.status === 'disconnected') continue;
+      const active = conn.status === 'connected';
+      const capabilityCount = (conn.granted_scopes || []).length;
+      const detail = `${conn.email || 'Google account'} — ${conn.status || 'unknown'} — ${capabilityCount} scope${capabilityCount === 1 ? '' : 's'}`;
+      items.push({ type: 'google', id: conn.id, name: conn.display_name || conn.email || 'Google Workspace', detail, enabled: active, data: conn });
     }
     // MCP servers
     const mcpList = Array.isArray(mcpRes) ? mcpRes : (mcpRes.servers || []);
@@ -3730,6 +3907,7 @@ async function initUnifiedIntegrations() {
             await fetch('/api/contacts/config', { method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ carddav_url: '', carddav_username: '', carddav_password: '' }) });
           }
           else if (type === 'email') await fetch(`/api/email/accounts/${id}`, { method: 'DELETE', credentials: 'same-origin' });
+          else if (type === 'google') await fetch(`/api/integrations/google/connections/${encodeURIComponent(id)}/disconnect`, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revoke_provider: true }) });
           else if (type === 'mcp') await fetch(`/api/mcp/servers/${id}`, { method: 'DELETE', credentials: 'same-origin' });
           else if (type === 'codex' || type === 'claude') await fetch(`/api/tokens/${id}`, { method: 'DELETE', credentials: 'same-origin' });
           else if (type === 'vault') await fetch('/api/vault/logout', { method: 'POST', credentials: 'same-origin' });
@@ -3747,6 +3925,7 @@ async function initUnifiedIntegrations() {
     else if (type === 'caldav') showCalDavForm(editId);
     else if (type === 'contacts' || type === 'carddav') showCardDavForm();
     else if (type === 'email') showEmailForm(editId);
+    else if (type === 'google') showGoogleForm(editId);
     else if (type === 'mcp') showMcpForm(editId);
     else if (type === 'codex') showAgentForm('codex', editId);
     else if (type === 'claude') showAgentForm('claude', editId);
@@ -3892,7 +4071,7 @@ async function initUnifiedIntegrations() {
       if (ntfyHint) {
         ntfyHint.style.display = isNtfy ? 'block' : 'none';
         if (isNtfy) {
-          ntfyHint.innerHTML = 'Enter the ntfy server URL Odysseus can reach. Examples: <code>http://127.0.0.1:8091</code>, <code>http://100.x.y.z:8091</code>, or <code>https://ntfy.example.com</code>.';
+          ntfyHint.innerHTML = 'Enter the ntfy server URL OM Automate can reach. Examples: <code>http://127.0.0.1:8091</code>, <code>http://100.x.y.z:8091</code>, or <code>https://ntfy.example.com</code>.';
         }
       }
       if (url) {
@@ -3954,6 +4133,188 @@ async function initUnifiedIntegrations() {
         }
       } catch (e) { el('uf-api-msg').textContent = 'Error: ' + e.message; el('uf-api-msg').style.color = 'var(--red)'; }
     });
+  }
+
+  // ── Google Workspace OAuth + account preferences ──
+  async function showGoogleForm(editId) {
+    const isNew = !editId || editId === 'new';
+    const getJson = async (url, options = {}) => {
+      const response = await fetch(url, { credentials: 'same-origin', ...options });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = data?.detail;
+        throw new Error(
+          (typeof detail === 'object' ? detail?.message : detail)
+          || data?.message || data?.error || `Request failed (${response.status})`
+        );
+      }
+      return data;
+    };
+
+    let client = { configured: false, capabilities: [], redirect_uri: '' };
+    let connection = null;
+    try {
+      const requests = [getJson('/api/integrations/google/client')];
+      if (!isNew) requests.push(getJson(`/api/integrations/google/connections/${encodeURIComponent(editId)}`));
+      const loaded = await Promise.all(requests);
+      client = loaded[0] || client;
+      connection = loaded[1] || null;
+    } catch (err) {
+      formEl.innerHTML = `<div class="admin-card" style="margin-top:8px"><div style="font-size:12px;color:var(--red)">${esc(err.message || 'Could not load Google settings.')}</div></div>`;
+      return;
+    }
+
+    const granted = new Set(connection?.granted_scopes || []);
+    const capabilityRows = (client.capabilities || []).map((cap) => {
+      const selected = !connection
+        ? ['gmail.read', 'gmail.draft', 'gmail.send', 'gmail.modify', 'calendar.read', 'calendar.write', 'calendar.freebusy'].includes(cap.id)
+        : (cap.scopes || []).every(scope => granted.has(scope));
+      return `<label style="display:flex;gap:8px;align-items:flex-start;padding:6px 0;font-size:11px;cursor:pointer">
+        <input type="checkbox" class="uf-google-capability" value="${esc(cap.id)}" ${selected ? 'checked' : ''} style="margin-top:2px">
+        <span><strong style="font-size:11px">${esc(cap.id)}</strong><br><span style="opacity:.62">${esc(cap.description || '')}</span></span>
+      </label>`;
+    }).join('');
+    const selectedCalendars = (connection?.selected_calendars || []).join(', ');
+    const labelPreferences = JSON.stringify(connection?.gmail_label_preferences || {}, null, 2);
+    const statusText = connection
+      ? `${connection.email || 'Google account'} · ${connection.status || 'unknown'}`
+      : (client.configured ? `OAuth client ready (${client.source || 'configured'})` : 'OAuth client setup required');
+    const lastCheck = connection?.last_validated_at
+      ? new Date(connection.last_validated_at).toLocaleString()
+      : 'Not checked yet';
+
+    formEl.innerHTML = `
+      <div class="admin-card" style="margin-top:8px">
+        <h2 style="font-size:13px;display:flex;align-items:center;gap:7px">${INTG_TYPES.google.icon}${connection ? 'Google Workspace account' : 'Connect Google Workspace'}</h2>
+        <div style="font-size:11px;opacity:.7;margin-bottom:10px">${esc(statusText)}. Credentials stay encrypted on this device and are never exposed to the browser or assistant.</div>
+        <div class="settings-col">
+          <details ${client.configured ? '' : 'open'}>
+            <summary style="font-size:12px;font-weight:600;cursor:pointer;margin-bottom:8px">OAuth client configuration</summary>
+            <div class="settings-row"><label class="settings-label">Client ID</label><input id="uf-google-client-id" class="settings-input" value="${esc(client.client_id || '')}" autocomplete="off" placeholder="...apps.googleusercontent.com"></div>
+            <div class="settings-row"><label class="settings-label">Client secret</label><input id="uf-google-client-secret" class="settings-input" type="password" autocomplete="new-password" placeholder="${client.has_client_secret ? 'Stored securely — enter only to replace' : 'Required'}"></div>
+            <div class="settings-row"><label class="settings-label">Redirect URI</label><input id="uf-google-redirect" class="settings-input" value="${esc(client.redirect_uri || '')}" autocomplete="off"></div>
+            <div style="font-size:10px;opacity:.58;margin:-2px 0 8px 106px">Register this exact URI in Google Cloud. HTTPS is required except for localhost.</div>
+            <div style="display:flex;justify-content:flex-end;gap:6px">
+              ${client.source === 'user' ? '<button type="button" class="admin-btn-sm" id="uf-google-client-remove">Remove client</button>' : ''}
+              <button type="button" class="admin-btn-add" id="uf-google-client-save">Save client</button>
+            </div>
+          </details>
+          <div style="border-top:1px solid var(--border);margin:10px 0"></div>
+          <div style="font-size:12px;font-weight:600">Access requested</div>
+          <div style="font-size:10px;opacity:.58;margin-bottom:4px">Choose only what OM Automate should be able to do. Sending and calendar changes still require approval.</div>
+          <div id="uf-google-capabilities" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));column-gap:14px">${capabilityRows}</div>
+          ${connection ? `
+            <div style="border-top:1px solid var(--border);margin:10px 0"></div>
+            <div class="settings-row"><label class="settings-label">Timezone</label><input id="uf-google-timezone" class="settings-input" value="${esc(connection.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')}" placeholder="Europe/Dublin"></div>
+            <div class="settings-row"><label class="settings-label">Default calendar</label><input id="uf-google-default-calendar" class="settings-input" value="${esc(connection.default_calendar || '')}" placeholder="primary"></div>
+            <div class="settings-row"><label class="settings-label">Selected calendars</label><input id="uf-google-calendars" class="settings-input" value="${esc(selectedCalendars)}" placeholder="primary, work@example.com"></div>
+            <div class="settings-row"><label class="settings-label">Send default</label><select id="uf-google-send-behavior" class="settings-input"><option value="approval_required" ${connection.default_send_behavior !== 'draft' ? 'selected' : ''}>Approval required</option><option value="draft" ${connection.default_send_behavior === 'draft' ? 'selected' : ''}>Create draft</option></select></div>
+            <div class="settings-row"><label class="settings-label">Gmail label prefs</label><textarea id="uf-google-label-prefs" class="settings-input" rows="3" spellcheck="false">${esc(labelPreferences)}</textarea></div>
+            <label style="display:flex;align-items:center;gap:8px;font-size:11px;margin-left:106px"><input id="uf-google-background-sync" type="checkbox" ${connection.background_sync_enabled ? 'checked' : ''}> Background sync enabled</label>
+            <div style="font-size:10px;opacity:.58;margin:5px 0 0 106px">Last provider check: ${esc(lastCheck)}${connection.last_sync_error ? ` · ${esc(connection.last_sync_error)}` : ''}</div>
+          ` : ''}
+          <div style="display:flex;align-items:center;gap:6px;justify-content:flex-end;margin-top:12px;flex-wrap:wrap">
+            <span id="uf-google-msg" role="status" aria-live="polite" style="font-size:11px;flex:1"></span>
+            ${connection ? '<button type="button" class="admin-btn-sm" id="uf-google-check">Check</button><button type="button" class="admin-btn-sm" id="uf-google-refresh">Refresh token</button><button type="button" class="admin-btn-sm" id="uf-google-prefs-save">Save preferences</button>' : ''}
+            <button type="button" class="admin-btn-add" id="uf-google-connect">${connection ? 'Reconnect access' : 'Connect Google'}</button>
+            ${connection ? '<button type="button" class="admin-btn-sm" id="uf-google-disconnect" style="color:var(--red)">Disconnect & revoke</button>' : ''}
+            <button type="button" class="admin-btn-sm" id="uf-google-cancel">Close</button>
+          </div>
+        </div>
+      </div>`;
+
+    const message = (text, ok = false) => {
+      const node = el('uf-google-msg');
+      if (!node) return;
+      node.textContent = text;
+      node.style.color = ok ? 'var(--green, #50fa7b)' : 'var(--red)';
+    };
+    const chosenCapabilities = () => Array.from(formEl.querySelectorAll('.uf-google-capability:checked')).map(node => node.value);
+    const saveClient = async () => {
+      const clientId = el('uf-google-client-id').value.trim();
+      const secret = el('uf-google-client-secret').value;
+      const redirectUri = el('uf-google-redirect').value.trim();
+      if (!secret) throw new Error(client.configured ? 'Enter the client secret to replace the stored client.' : 'Client secret is required.');
+      client = await getJson('/api/integrations/google/client', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client_id: clientId, client_secret: secret, redirect_uri: redirectUri }),
+      });
+      el('uf-google-client-secret').value = '';
+      message('OAuth client saved securely.', true);
+      return client;
+    };
+
+    el('uf-google-client-save')?.addEventListener('click', async () => {
+      try { await saveClient(); } catch (err) { message(err.message || 'Could not save the OAuth client.'); }
+    });
+    el('uf-google-client-remove')?.addEventListener('click', async () => {
+      if (!await window.styledConfirm('Remove the stored Google OAuth client? Connected accounts must be disconnected first.', { confirmText: 'Remove', danger: true })) return;
+      try {
+        await getJson('/api/integrations/google/client', { method: 'DELETE' });
+        message('OAuth client removed.', true);
+        setTimeout(() => showGoogleForm('new'), 250);
+      } catch (err) { message(err.message || 'Could not remove the OAuth client.'); }
+    });
+    el('uf-google-connect')?.addEventListener('click', async () => {
+      try {
+        const capabilities = chosenCapabilities();
+        if (!capabilities.length) throw new Error('Choose at least one capability.');
+        if (!client.configured) await saveClient();
+        message('Opening Google consent…', true);
+        const started = await getJson('/api/integrations/google/oauth/authorize', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ capabilities, login_hint: connection?.email || null }),
+        });
+        if (!started.authorization_url) throw new Error('Google did not return an authorization URL.');
+        window.location.assign(started.authorization_url);
+      } catch (err) { message(err.message || 'Could not start Google authorization.'); }
+    });
+    el('uf-google-prefs-save')?.addEventListener('click', async () => {
+      try {
+        let gmailLabelPreferences;
+        try { gmailLabelPreferences = JSON.parse(el('uf-google-label-prefs').value || '{}'); }
+        catch (_) { throw new Error('Gmail label preferences must be valid JSON.'); }
+        const calendars = el('uf-google-calendars').value.split(',').map(value => value.trim()).filter(Boolean);
+        await getJson(`/api/integrations/google/connections/${encodeURIComponent(editId)}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            timezone: el('uf-google-timezone').value.trim(),
+            default_calendar: el('uf-google-default-calendar').value.trim() || null,
+            selected_calendars: calendars,
+            default_send_behavior: el('uf-google-send-behavior').value,
+            gmail_label_preferences: gmailLabelPreferences,
+            background_sync_enabled: el('uf-google-background-sync').checked,
+          }),
+        });
+        message('Preferences saved.', true);
+        await renderList();
+      } catch (err) { message(err.message || 'Could not save preferences.'); }
+    });
+    for (const [buttonId, action, success] of [
+      ['uf-google-check', 'check', 'Google identity and credentials are healthy.'],
+      ['uf-google-refresh', 'refresh', 'Google access token refreshed.'],
+    ]) {
+      el(buttonId)?.addEventListener('click', async () => {
+        try {
+          await getJson(`/api/integrations/google/connections/${encodeURIComponent(editId)}/${action}`, { method: 'POST' });
+          message(success, true);
+          await renderList();
+        } catch (err) { message(err.message || `Could not ${action} this connection.`); }
+      });
+    }
+    el('uf-google-disconnect')?.addEventListener('click', async () => {
+      if (!await window.styledConfirm(`Disconnect and revoke Google access for ${connection?.email || 'this account'}?`, { confirmText: 'Disconnect', danger: true })) return;
+      try {
+        await getJson(`/api/integrations/google/connections/${encodeURIComponent(editId)}/disconnect`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ revoke_provider: true }),
+        });
+        formEl.style.display = 'none';
+        await renderList();
+        notifyIntegrationsChanged();
+      } catch (err) { message(err.message || 'Could not disconnect this account.'); }
+    });
+    el('uf-google-cancel')?.addEventListener('click', () => { formEl.style.display = 'none'; });
   }
 
   // ── CalDAV form (supports add + edit per account) ──
@@ -4172,7 +4533,7 @@ async function initUnifiedIntegrations() {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = format === 'csv' ? 'odysseus-contacts.csv' : 'odysseus-contacts.vcf';
+        a.download = format === 'csv' ? 'om-automate-contacts.csv' : 'om-automate-contacts.vcf';
         document.body.appendChild(a);
         a.click();
         a.remove();
@@ -4429,9 +4790,9 @@ async function initUnifiedIntegrations() {
           <div class="settings-row"><label class="settings-label">Email${_hint('Your email address. Used as the From: header on outgoing mail and as the display label when Name is blank.')}</label><input id="uf-email-from" class="settings-input" placeholder="you@example.com"></div>
           <div class="settings-row"><label class="settings-label">Display Name${_hint('Your name as it appears in the From: field of emails you send, e.g. Jane Smith. Auto-filled from Google during OAuth.')}</label><input id="uf-display-name" class="settings-input" placeholder="Your Name"></div>
           <div id="uf-oauth-section" style="display:none;margin:8px 0;padding:10px;border:1px solid var(--border);border-radius:6px;background:color-mix(in srgb,var(--accent,#50fa7b) 6%,transparent)">
-            <div style="font-size:11px;font-weight:600;margin-bottom:6px">Google OAuth2 — required for Workspace / .edu accounts</div>
-            <div id="uf-oauth-status" style="font-size:11px;opacity:0.7;margin-bottom:6px">${existing && existing.oauth_provider === 'google' ? '✓ Connected via Google OAuth' : 'Not connected — click below to authorize'}</div>
-            <button type="button" id="uf-oauth-btn" class="admin-btn-add" style="font-size:11px">${existing && existing.oauth_provider === 'google' ? 'Reconnect with Google' : 'Connect with Google'}</button>
+            <div style="font-size:11px;font-weight:600;margin-bottom:6px">Google Workspace uses the secure Gmail API</div>
+            <div id="uf-oauth-status" style="font-size:11px;opacity:0.7;margin-bottom:6px">Legacy IMAP OAuth has been retired. Connect Gmail and Calendar as a first-class Google Workspace integration.</div>
+            <button type="button" id="uf-oauth-btn" class="admin-btn-add" style="font-size:11px">Open Google Workspace setup</button>
           </div>
           <div style="font-size:11px;font-weight:600;opacity:0.6;margin:4px 0 2px;display:flex;align-items:center;gap:5px;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--accent, var(--red));flex-shrink:0;" aria-hidden="true"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>IMAP (Receiving)</div>
           <div class="settings-row"><label class="settings-label">Host${_hint('Your IMAP server, e.g. imap.gmail.com, imap.migadu.com, a LAN host, or a Tailscale IP for Dovecot.')}</label><input id="uf-imap-host" class="settings-input" placeholder="imap.example.com"></div>
@@ -4492,7 +4853,7 @@ async function initUnifiedIntegrations() {
       },
       outlook: {
         title: 'Outlook / Office 365 needs OAuth',
-        body: 'Microsoft disables normal password login for IMAP/SMTP in most Outlook and Microsoft 365 accounts. Odysseus does not support Microsoft OAuth/Graph mail yet, so this preset is only a placeholder for future support.',
+        body: 'Microsoft disables normal password login for IMAP/SMTP in most Outlook and Microsoft 365 accounts. OM Automate does not support Microsoft OAuth/Graph mail yet, so this preset is only a placeholder for future support.',
         url: 'https://learn.microsoft.com/exchange/clients-and-mobile-in-exchange-online/disable-basic-authentication-in-exchange-online',
         linkLabel: 'Read Microsoft note',
       },
@@ -4649,18 +5010,8 @@ async function initUnifiedIntegrations() {
     // Init OAuth UI for accounts already connected via OAuth.
     if (existing && existing.oauth_provider === 'google') _syncOauthUI('google_workspace');
 
-    // "Connect with Google" — save the account first, then redirect to OAuth.
-    el('uf-oauth-btn').addEventListener('click', async () => {
-      const body = _collectBody();
-      if (!body.name) body.name = body.from_address;
-      if (!body.name) { el('uf-email-msg').textContent = 'Enter a Name or Email first'; el('uf-email-msg').style.color = 'var(--red)'; return; }
-      const url = isEdit ? `/api/email/accounts/${editId}` : '/api/email/accounts';
-      const method = isEdit ? 'PUT' : 'POST';
-      const r = await fetch(url, { method, credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      const d = await r.json();
-      if (!(d.ok || d.id)) { el('uf-email-msg').textContent = d.error || 'Save failed'; el('uf-email-msg').style.color = 'var(--red)'; return; }
-      const accId = isEdit ? editId : d.id;
-      window.location.href = `/api/email/oauth/google/authorize?account_id=${encodeURIComponent(accId)}`;
+    el('uf-oauth-btn').addEventListener('click', () => {
+      showGoogleForm('new');
     });
 
     // "Same as IMAP" toggle — hide the SMTP creds rows when on.
@@ -5312,7 +5663,7 @@ async function initUnifiedIntegrations() {
               </button>
             </div>
             <div id="uf-codex-config-body" style="display:none;">
-              <div style="font-size:11px;opacity:0.62;margin:4px 0 6px;">Toggle which Odysseus tools this agent can use. New agents start with chat only.</div>
+              <div style="font-size:11px;opacity:0.62;margin:4px 0 6px;">Toggle which OM Automate tools this agent can use. New agents start with chat only.</div>
               <div id="uf-codex-inline-scopes"></div>
             </div>
           </div>
@@ -5647,6 +5998,7 @@ async function initUnifiedIntegrations() {
       ['carddav', 'Contacts (CardDAV)'],
       ['contacts', 'Contacts Import'],
       ['email', 'Email (IMAP/SMTP)'],
+      ['google', 'Google Workspace'],
       ['mcp', 'MCP Tool Server'],
     ];
     const _iconFor = (k) => (INTG_TYPES[k]?.icon || '').replace(/width="14"/, 'width="16"').replace(/height="14"/, 'height="16"');
@@ -5758,12 +6110,16 @@ export function close() {
 // Handle redirect back from Google OAuth2 — open settings to integrations and show status.
 (function _handleOauthRedirect() {
   const sp = new URLSearchParams(window.location.search);
-  if (!sp.has('email_oauth_success') && !sp.has('email_oauth_error')) return;
+  const workspaceResult = sp.get('google_oauth');
+  if (!sp.has('email_oauth_success') && !sp.has('email_oauth_error') && !workspaceResult) return;
+  const legacySuccess = sp.has('email_oauth_success');
+  const errMsg = sp.get('email_oauth_error') || sp.get('code') || '';
+  const migrationSetup = workspaceResult === 'setup';
   // Strip params from URL without a page reload.
-  const clean = window.location.pathname + window.location.hash;
+  for (const key of ['email_oauth_success', 'email_oauth_error', 'google_oauth', 'connection', 'code']) sp.delete(key);
+  const clean = window.location.pathname + (sp.toString() ? `?${sp}` : '') + window.location.hash;
   window.history.replaceState(null, '', clean);
-  const success = sp.has('email_oauth_success');
-  const errMsg = sp.get('email_oauth_error') || '';
+  const success = workspaceResult === 'success' || legacySuccess;
   // Open settings → integrations after the app has initialised.
   function _tryOpen() {
     if (window.settingsModule && typeof window.settingsModule.open === 'function') {
@@ -5771,11 +6127,13 @@ export function close() {
       // Brief toast-style banner.
       const banner = document.createElement('div');
       banner.textContent = success
-        ? '✓ Google account connected — email is ready'
-        : `Google OAuth failed: ${errMsg || 'unknown error'}`;
+        ? '✓ Google account connected — Gmail and Calendar access are ready'
+        : migrationSetup
+          ? 'Google mail now connects through the Google Workspace integration.'
+          : `Google OAuth failed: ${errMsg || 'unknown error'}`;
       Object.assign(banner.style, {
         position: 'fixed', bottom: '24px', left: '50%', transform: 'translateX(-50%)',
-        background: success ? 'var(--accent, #50fa7b)' : 'var(--red, #ff5555)',
+        background: success || migrationSetup ? 'var(--accent, #50fa7b)' : 'var(--red, #ff5555)',
         color: '#000', padding: '8px 18px', borderRadius: '6px', fontSize: '12px',
         fontWeight: '600', zIndex: '99999', pointerEvents: 'none',
         boxShadow: '0 2px 12px rgba(0,0,0,0.3)',

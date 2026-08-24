@@ -7,22 +7,36 @@ Holds the search_chats tool.
 import logging
 from typing import Dict
 
+from src.tools._common import _configured_auth_requires_owner
+
 logger = logging.getLogger(__name__)
 
 
 async def do_search_chats(query: str, limit: int = 20, owner: str | None = None) -> Dict:
     """Search past session transcripts for the calling user's sessions only.
 
-    Without an owner filter this used to leak EVERY user's chat history
-    into the agent's `search_chats` results (v2 review HIGH-11). The
-    caller in `tool_execution.execute_tool_block` now plumbs the owner
-    through; legacy callers without owner pass through as before but
-    will only see legacy/null-owner rows.
+    Configured multi-user deployments require an authenticated owner.  Even
+    with one, legacy/null-owner sessions are deliberately excluded so data
+    created before ownership was introduced cannot become implicitly shared.
+    Ownerless search remains available only when auth is explicitly disabled
+    for single-user mode and is still restricted to null-owner rows.
     """
+    if _configured_auth_requires_owner(owner):
+        return {
+            "error": "Authenticated owner is required to search chat history",
+            "exit_code": 1,
+        }
+
     try:
         from src.session_search import search_session_messages
 
-        results = search_session_messages(query, limit=limit, owner=owner)
+        results = search_session_messages(
+            query,
+            limit=limit,
+            owner=owner,
+            restrict_owner=True,
+            include_legacy_owner=False,
+        )
         if not results:
             return {"results": f"No chats found matching \"{query}\"."}
 

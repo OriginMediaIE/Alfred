@@ -159,18 +159,22 @@ def test_agent_loop_forced_web_tools_filtered_by_disabled_tools(monkeypatch):
 
 def test_agent_loop_policy_blocks_disabled_web_tool_call_before_execution(monkeypatch):
     _patch_loop_basics(monkeypatch)
-    called = False
+    import src.tool_execution as execution
 
-    async def _fake_exec(*args, **kwargs):
-        nonlocal called
-        called = True
-        return ("web_search", {"output": "ran", "exit_code": 0})
+    async def _forbidden_dispatch(*args, **kwargs):
+        raise AssertionError("policy-denied tool reached its runtime handler")
 
     async def _fake_stream(_candidates, messages, **kwargs):
-        yield _delta_chunk('```web_search\n{"query":"current CVEs"}\n```')
+        yield "data: " + json.dumps({
+            "type": "tool_calls",
+            "calls": [{
+                "name": "web_search",
+                "arguments": '{"query":"current CVEs"}',
+            }],
+        }) + "\n\n"
         yield "data: [DONE]\n\n"
 
-    monkeypatch.setattr(al, "execute_tool_block", _fake_exec, raising=False)
+    monkeypatch.setattr(execution, "_dispatch_resolved_binding", _forbidden_dispatch)
     monkeypatch.setattr(al, "stream_llm_with_fallback", _fake_stream, raising=False)
 
     policy = build_effective_tool_policy(
@@ -186,13 +190,15 @@ def test_agent_loop_policy_blocks_disabled_web_tool_call_before_execution(monkey
             relevant_tools={"web_search"},
             disabled_tools=set(policy.all_disabled_names()),
             tool_policy=policy,
+            _certified_tool_calling=True,
         )
     )
     events = _events(chunks)
     blocked = [event for event in events if event.get("type") == "tool_output"]
 
-    assert called is False
-    assert not any(event.get("type") == "tool_start" for event in events)
+    # A native call is visible as an attempted tool before the centralized
+    # executor returns the denial, but the runtime handler is never reached.
+    assert any(event.get("type") == "tool_start" for event in events)
     assert blocked
     assert blocked[0]["tool"] == "web_search"
     assert blocked[0]["exit_code"] == 1
@@ -205,7 +211,7 @@ def test_executor_policy_backstop_blocks_tools():
     )
     assert desc == "bash: BLOCKED"
     assert result["exit_code"] == 1
-    assert "forbade" in result["error"]
+    assert "forbidden" in result["error"]
 
 
 def test_agent_loop_blocks_guide_only_fenced_tool_before_start(monkeypatch):
@@ -238,10 +244,9 @@ def test_agent_loop_blocks_guide_only_fenced_tool_before_start(monkeypatch):
     events = _events(chunks)
     assert called is False
     assert not any(event.get("type") == "tool_start" for event in events)
-    blocked = [event for event in events if event.get("type") == "tool_output"]
-    assert blocked
-    assert blocked[0]["tool"] == "bash"
-    assert blocked[0]["exit_code"] == 1
+    # Legacy textual fences are inert input, not attempted executions, so no
+    # synthetic tool event is emitted.
+    assert not any(event.get("type") == "tool_output" for event in events)
 
 
 def test_guide_only_hides_api_function_schemas(monkeypatch):
@@ -326,7 +331,7 @@ def test_guide_only_blocks_document_prestream(monkeypatch):
     events = _events(chunks)
     assert not any(event.get("type") == "doc_stream_open" for event in events)
     assert not any(event.get("type") == "tool_start" for event in events)
-    assert any(event.get("type") == "tool_output" and event.get("tool") == "create_document" for event in events)
+    assert not any(event.get("type") == "tool_output" for event in events)
 
 
 def test_guide_only_blocks_later_round_document_streaming(monkeypatch):
@@ -355,7 +360,7 @@ def test_guide_only_blocks_later_round_document_streaming(monkeypatch):
         )
     )
     events = _events(chunks)
-    assert calls == 2
+    assert calls == 1
     assert not any(event.get("type") == "doc_stream_open" for event in events)
     assert not any(event.get("type") == "doc_stream_delta" for event in events)
 

@@ -20,8 +20,12 @@ import documentModule from './document.js';
 import workspaceModule from './workspace.js';
 import settingsModule from './settings.js';
 import cookbookModule from './cookbook.js';
+import { runLocalLlmOnboarding } from './localLlmOnboarding.js';
 import { EVAL_PROMPTS } from './compare/index.js';
 import { PROVIDER_DEVICE_FLOWS, formatDeviceFlowError, runProviderDeviceFlow } from './providerDeviceFlow.js';
+import { getBrand } from './brand.js';
+
+const BRAND = getBrand();
 
 // ── Module state ──────────────────────────────────────────────────────
 
@@ -305,7 +309,7 @@ function slashReply(text) {
   div.className = 'msg msg-ai';
   const role = document.createElement('div');
   role.className = 'role';
-  role.textContent = 'Odysseus';
+  role.textContent = BRAND.assistant_name;
   div.appendChild(role);
   const body = document.createElement('div');
   body.className = 'body';
@@ -424,7 +428,7 @@ function typewriterReply(text, options = {}) {
     div.className = 'msg msg-ai';
     const role = document.createElement('div');
     role.className = 'role';
-    role.textContent = 'Odysseus';
+    role.textContent = BRAND.assistant_name;
     div.appendChild(role);
     const body = document.createElement('div');
     body.className = 'body';
@@ -464,7 +468,7 @@ function typewriterBlocksReply(blocks, options = {}) {
     div.className = 'msg msg-ai';
     const role = document.createElement('div');
     role.className = 'role';
-    role.textContent = 'Odysseus';
+    role.textContent = BRAND.assistant_name;
     div.appendChild(role);
     const body = document.createElement('div');
     body.className = 'body';
@@ -655,7 +659,7 @@ async function connectDetectedSetupEndpoint(detected) {
   spinnerDiv.className = 'msg msg-ai';
   const spinnerRole = document.createElement('div');
   spinnerRole.className = 'role';
-  spinnerRole.textContent = 'Odysseus';
+  spinnerRole.textContent = BRAND.assistant_name;
   spinnerDiv.appendChild(spinnerRole);
   const spinnerBody = document.createElement('div');
   spinnerBody.className = 'body';
@@ -2465,7 +2469,7 @@ async function _cmdDemo(args, ctx) {
   const delay = ms => new Promise(r => setTimeout(r, ms));
 
   // ── Welcome ──
-  await typewriterReply('Welcome to Odysseus! Lets begin the tour!');
+  await typewriterReply(`Welcome to ${BRAND.product_name}. Let’s begin the tour.`);
   // Beat between the welcome line and the first hint so it doesn't snap in.
   await delay(900);
 
@@ -2503,8 +2507,8 @@ async function _cmdDemo(args, ctx) {
     { sel: '#sidebar-new-chat-btn', text: 'Start a new chat here. <b>Click it.</b> You can do it!', mode: 'click',
       before() { if (sidebar?.classList.contains('hidden')) sidebar.classList.remove('hidden'); } },
     { sel: '#model-picker-btn',   text: 'Pick your LLM, Local or API.', advanceOnClick: true },
-    { sel: '#mode-agent-btn',     text: '<b>Agent mode</b> gives Odysseus more control of the app when your model supports tools: create a theme, download a model, make a daily task, organize things, and more.', mode: 'click' },
-    { sel: '#web-toggle-btn',     text: 'Toggle tools like <b>web search</b>. Odysseus comes with private built-in <b>SearXNG</b> search.', mode: 'click' },
+    { sel: '#mode-agent-btn',     text: `<b>Agent mode</b> gives ${BRAND.assistant_name} controlled access to permitted tools: create a theme, download a model, make a daily task, organise things, and more.`, mode: 'click' },
+    { sel: '#web-toggle-btn',     text: `Toggle tools like <b>web search</b>. ${BRAND.product_name} includes private built-in <b>SearXNG</b> search.`, mode: 'click' },
     { sel: '#overflow-plus-btn',  text: 'More tools can be found here, or in your sidebar. <b>Click to peek.</b>',
       advanceOnClick: true, pulseNext: true, afterDelay: 2200 },
     { sel: '#message',            text: 'Write your prompt here. Drag and drop files to attach them. <b>/prompt</b> for random prompt, <b>/help</b> for more.',
@@ -2534,7 +2538,7 @@ async function _cmdDemo(args, ctx) {
   }
 
   _clearTour();
-  await typewriterReply('Odysseus is yours to explore, enjoy the voyage!');
+  await typewriterReply(`${BRAND.product_name} is ready. Your data and decisions stay under your control.`);
   return true;
 }
 
@@ -3249,7 +3253,7 @@ async function _cmdTourTheme(args, ctx) {
   // work as a fallback (read past without touching anything).
   const steps = [
     { sel: '#theme-popup',
-      text: '<b>Welcome to Theme.</b> Odysseus is yours to customize!',
+      text: `<b>Welcome to Theme.</b> Make ${BRAND.product_name} feel like yours.`,
       placement: 'center-above',
       before: () => _clickTab('theme-tab-browse') },
     { sel: '#themeGrid',
@@ -3481,7 +3485,7 @@ async function _cmdTourSettings(args, ctx) {
       text: '<b>AI Defaults</b> — three roles share the work. Let\'s walk through them.',
       before: () => _clickNav('ai') },
     { sel: '#settings-modal .admin-card:has(#set-defaultModelSelect)',
-      text: '<b>Default Chat Model</b> — your main model. The one Odysseus reaches for whenever you start a new chat.',
+      text: `<b>Default Chat Model</b> — the main model ${BRAND.assistant_name} uses when you start a new chat.`,
       before: () => _clickNav('ai') },
     { sel: '#settings-modal .admin-card:has(#set-utilityModelSelect)',
       text: '<b>Utility Model</b> — your hard-working sidekick. Runs background tasks (compaction, cleanup, auto-naming, summarization) so your chat model doesn\'t burn cycles on chores. <b>Recommend a small local model</b> here — it\'s free and always on.',
@@ -3502,7 +3506,7 @@ async function _cmdTourSettings(args, ctx) {
       text: '<b>Email</b> — sync schedule, drafts, snooze defaults — everything email-flow related.',
       before: () => _clickNav('email') },
     { sel: '#settings-modal .settings-nav-item[data-settings-tab="reminders"]',
-      text: '<b>Reminders</b> — quiet hours and how Odysseus nudges you about calendar + urgent email.',
+      text: `<b>Reminders</b> — quiet hours and how ${BRAND.assistant_name} notifies you about calendar and urgent email.`,
       before: () => _clickNav('reminders') },
   ];
 
@@ -3915,7 +3919,7 @@ async function _cmdTourNotes(args, ctx) {
       text: '<b>Notes</b> is your basic todo list, and also where reminders are managed.',
       placement: 'center-above' },
     { sel: '#notes-pane .notes-pane-body',
-      text: 'Your notes show up here. You can also <b>ask Odysseus in chat</b> to take a note for you.' },
+      text: `Your notes show up here. You can also <b>ask ${BRAND.assistant_name} in chat</b> to take a note for you.` },
     { sel: '#notes-search',
       text: '<b>Search</b> across every note — title, body, tags, the works.' },
     { sel: '#notes-view-toggle',
@@ -4354,7 +4358,7 @@ async function _cmdTourTask1(args, ctx) {
       text: 'Tasks are <b>paused by default</b> — resume whichever ones make sense for you. (Or pause anything that\'s running.)' },
     { sel: '#tasks-modal .modal-body',
       text: 'When enabled, Tasks use the <b>utility model configured in Settings</b> for cleanup and organization jobs.' },
-  ], 'Use Tasks when you want Odysseus to handle background housekeeping.', {
+  ], `Use Tasks when you want ${BRAND.assistant_name} to handle background housekeeping.`, {
     continueLabel: 'continue →',
     continueText: '<b>Part 1 done.</b> Want to keep going into <b>adding & managing tasks</b>?',
   });
@@ -4378,7 +4382,7 @@ async function _cmdTourTask2(args, ctx) {
     // re-show it when the user moves past this step so the tour lands
     // back where it started.
     { sel: '#message',
-      text: 'You can also <b>just ask in chat</b> — say "every weekday at 9am check for urgent emails" and Odysseus will create the task for you.',
+      text: `You can also <b>just ask in chat</b> — say "every weekday at 9am check for urgent emails" and ${BRAND.assistant_name} will create the task for you.`,
       before: () => document.getElementById('tasks-modal')?.classList.add('hidden'),
       after:  () => document.getElementById('tasks-modal')?.classList.remove('hidden') },
   ], 'That\'s Tasks. Have it run the background bits so you can stay in chat.');
@@ -5258,19 +5262,6 @@ async function _cmdShortcuts(args, ctx) {
 
 // ── Easter eggs ──
 
-const _ODYSSEY_QUOTES = [
-  "Tell me, O Muse, of that ingenious hero who travelled far and wide...",
-  "Of all creatures that breathe and move upon the earth, nothing is bred that is weaker than man.",
-  "There is a time for many words, and there is also a time for sleep.",
-  "Even his griefs are a joy long after to one that remembers all that he wrought and endured.",
-  "Be strong, saith my heart; I am a soldier; I have seen worse sights than this.",
-  "There is nothing more admirable than when two people who see eye to eye keep house as man and wife.",
-  "A man who has been through bitter experiences and travelled far enjoys even his sufferings after a time.",
-  "For a friend with an understanding heart is worth no less than a brother.",
-  "The wine urges me on, the bewitching wine, which sets even a wise man to singing and to laughing gently.",
-  "I am Odysseus, son of Laertes, known to all for my cunning. My fame reaches even unto heaven.",
-];
-
 const _8BALL = [
   "It is certain.", "It is decidedly so.", "Without a doubt.", "Yes, definitely.",
   "You may rely on it.", "As I see it, yes.", "Most likely.", "Outlook good.",
@@ -5310,7 +5301,7 @@ function _eggRender(html) {
   div.className = 'msg msg-ai';
   const role = document.createElement('div');
   role.className = 'role';
-  role.textContent = 'Odysseus';
+  role.textContent = BRAND.assistant_name;
   div.appendChild(role);
   const body = document.createElement('div');
   body.className = 'body';
@@ -5400,18 +5391,8 @@ async function _cmdFortune(args, ctx) {
   return true;
 }
 
-async function _cmdOdyssey(args, ctx) {
-  const q = _ODYSSEY_QUOTES[Math.floor(Math.random() * _ODYSSEY_QUOTES.length)];
-  _eggRender(`<div style="max-width:420px;border-left:3px solid var(--red);padding:8px 16px;animation:egg-fade 0.5s ease-out">
-    <div style="font-style:italic;line-height:1.6;opacity:0.9">${q}</div>
-    <div style="margin-top:8px;font-size:0.8em;opacity:0.4">Homer, The Odyssey</div>
-  </div>`);
-  if (!document.getElementById('egg-styles')) { const s=document.createElement('style');s.id='egg-styles';s.textContent='@keyframes egg-spin{0%{transform:rotateY(0) scale(0.5);opacity:0}50%{transform:rotateY(540deg) scale(1.2)}100%{transform:rotateY(720deg) scale(1)}} @keyframes egg-shake{0%,100%{transform:rotate(0)}25%{transform:rotate(-8deg)}75%{transform:rotate(8deg)}} @keyframes egg-fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}';document.head.appendChild(s); }
-  return true;
-}
-
 async function _cmdAscii(args, ctx) {
-  const text = args.join(' ') || 'Odysseus';
+  const text = args.join(' ') || BRAND.assistant_name;
   const FONT = {
     'A':'  #  \n # # \n#####\n#   #\n#   #','B':'#### \n#   #\n#### \n#   #\n#### ','C':' ####\n#    \n#    \n#    \n ####',
     'D':'#### \n#   #\n#   #\n#   #\n#### ','E':'#####\n#    \n###  \n#    \n#####','F':'#####\n#    \n###  \n#    \n#    ',
@@ -5896,6 +5877,13 @@ const COMMANDS = {
     handler: _cmdTourCookbook,
     usage: '/tour-cookbook'
   },
+  'tour-local-llm': {
+    alias: ['local-llm-tour'],
+    category: 'Tours',
+    help: 'Local LLM setup, web access, and memory tutorial',
+    handler: () => runLocalLlmOnboarding('download').then(() => true),
+    usage: '/tour-local-llm'
+  },
   'tour-research': {
     alias: ['research-tour'],
     category: 'Tours',
@@ -6140,7 +6128,6 @@ const COMMANDS = {
   roll:    { alias: ['dice', 'r'],  hidden: true, handler: _cmdRoll,    usage: '/roll [NdN|sides]' },
   '8ball': { alias: ['8-ball'],     hidden: true, handler: _cmd8Ball,   usage: '/8ball question' },
   fortune: { alias: ['cookie'],     hidden: true, handler: _cmdFortune, usage: '/fortune' },
-  odyssey: { alias: ['homer','quote'],hidden: true, handler: _cmdOdyssey,usage: '/odyssey' },
   ascii:   { alias: ['banner'],     hidden: true, handler: _cmdAscii,   usage: '/ascii [text]' },
   matrix:  { alias: [],             hidden: true, handler: _cmdMatrix,  usage: '/matrix' },
   cowsay:  { alias: ['moo', 'say'], hidden: true, handler: _cmdSay,     usage: '/cowsay [text]' },

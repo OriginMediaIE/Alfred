@@ -3,13 +3,13 @@
 # which raises KeyError on Python 3.13+ (PEP 667). Build patched wheels here so
 # the final image / Cookbook never has to compile the broken sdists. See
 # docker/build-realesrgan-wheels.sh for the full rationale.
-FROM python:3.14-slim AS realesrgan-wheels
+FROM python:3.14.6-slim-bookworm AS realesrgan-wheels
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 COPY docker/build-realesrgan-wheels.sh /usr/local/bin/build-realesrgan-wheels.sh
 RUN bash /usr/local/bin/build-realesrgan-wheels.sh /wheels
 
-FROM python:3.14-slim
+FROM python:3.14.6-slim-bookworm
 
 # System deps. tmux is required by Cookbook for background downloads/serves.
 # openssh-client is required for Cookbook remote server tests, setup, probes,
@@ -69,12 +69,13 @@ RUN ARCH="$(dpkg --print-architecture)" \
 
 WORKDIR /app
 
-# Install Python deps first (layer cache). Optional extras (PyMuPDF AGPL, etc.)
-# are opt-in so the default image stays MIT-core; see requirements-optional.txt.
+# Install Python deps first (layer cache). This image is AGPL-3.0-or-later (see
+# LICENSE). Optional extras (PyMuPDF, etc.) are opt-in so the default image does
+# not pull in additional third-party copyleft terms; see requirements-optional.txt.
 ARG INSTALL_OPTIONAL=false
-COPY requirements.txt requirements-optional.txt ./
-RUN pip install --no-cache-dir -r requirements.txt \
-    && if [ "$INSTALL_OPTIONAL" = "true" ]; then pip install --no-cache-dir -r requirements-optional.txt; fi
+COPY requirements-om.lock requirements-optional.lock ./
+RUN pip install --no-cache-dir -r requirements-om.lock \
+    && if [ "$INSTALL_OPTIONAL" = "true" ]; then pip install --no-cache-dir -r requirements-optional.lock; fi
 
 # python-magic powers content-based MIME sniffing in src/upload_handler.py.
 # Image-only (not in requirements.txt) because it needs the libmagic1 system
@@ -94,7 +95,7 @@ RUN pip install --no-cache-dir --no-deps /tmp/odysseus-wheels/*.whl \
 COPY . .
 
 # Create data directory (mount a volume here for persistence)
-RUN mkdir -p data logs services/cache/search
+RUN mkdir -p data/logs services/cache/search
 
 # Entrypoint that drops to PUID/PGID (default 1000:1000) and repairs
 # ownership on the bind-mounted /app/data and /app/logs. Without this,

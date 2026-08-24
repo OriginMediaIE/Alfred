@@ -70,6 +70,7 @@ def test_ask_user_is_emitted_last_and_persisted(monkeypatch):
             [{"role": "user", "content": "Ayúdame a elegir un proyecto."}],
             relevant_tools={"ask_user"},
             _is_teacher_run=True,
+            _certified_tool_calling=True,
         )
     )
     events = _events(chunks)

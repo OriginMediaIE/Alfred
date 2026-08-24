@@ -1,4 +1,6 @@
+import os
 import socket
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -59,18 +61,20 @@ async def test_container_cli_only_is_rejected(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_container_opt_in_with_unix_socket_is_allowed(monkeypatch, tmp_path):
     monkeypatch.setattr(cookbook_routes.shutil, "which", lambda binary: "/usr/bin/docker")
-    socket_path = tmp_path / "docker.sock"
-
-    with socket.socket(socket.AF_UNIX) as unix_socket:
-        unix_socket.bind(str(socket_path))
-        available = await cookbook_routes._binary_available(
-            "docker",
-            None,
-            None,
-            in_container=True,
-            environ={"ODYSSEUS_ENABLE_HOST_DOCKER": "true"},
-            socket_path=str(socket_path),
-        )
+    socket_path = Path("/tmp") / f"om-cookbook-{os.getpid()}-{id(monkeypatch)}.sock"
+    try:
+        with socket.socket(socket.AF_UNIX) as unix_socket:
+            unix_socket.bind(str(socket_path))
+            available = await cookbook_routes._binary_available(
+                "docker",
+                None,
+                None,
+                in_container=True,
+                environ={"ODYSSEUS_ENABLE_HOST_DOCKER": "true"},
+                socket_path=str(socket_path),
+            )
+    finally:
+        socket_path.unlink(missing_ok=True)
 
     assert available is True
 

@@ -138,25 +138,35 @@ credit:
 
 ---
 
-### License-compatibility notes (for the repo's own LICENSE choice)
+### Dependency licence notes
 
-The **core ships fully permissive** (MIT-compatible), so the two copyleft
-concerns from earlier are resolved:
+**This project is licensed AGPL-3.0-or-later. See `LICENSE`.** The notes below
+describe the licences of *dependencies* only. They record which third-party
+obligations the default install does and does not pull in. They do not describe
+the licence of this program, and nothing here makes any part of this work
+permissively licensed.
 
-- **PDF text extraction** now uses **`pypdf`** (BSD-3-Clause) and **encoding
+- **PDF text extraction** uses **`pypdf`** (BSD-3-Clause) and **encoding
   detection** uses **`charset-normalizer`** (MIT). chardet (LGPL-2.1) has been
   removed entirely.
-- **PyMuPDF (AGPL-3.0)** is no longer a core dependency. It is **optional** and
-  used *only* by the PDF form-filling feature (`src/pdf_forms.py` and the form
-  endpoints in `routes/document_routes.py`), lazy-imported and listed in
-  `requirements-optional.txt`. The MIT core runs without it. If you choose to
-  install it, AGPL's network clause then applies to *that feature* for your
-  deployment (Artifex also sells a commercial PyMuPDF license that lifts this).
+- **PyMuPDF (AGPL-3.0-or-later / commercial)** is not a default dependency. It is
+  **optional**, used only by the PDF form-filling feature (`src/pdf_forms.py` and
+  the form endpoints in `routes/document_routes.py`), lazy-imported and listed in
+  `requirements-optional.txt`. Installing it adds a *second, independent* AGPL
+  copyright holder's terms; it is **not** what causes AGPL to apply to this
+  program, which is already AGPL-licensed in its own right. Artifex sells a
+  commercial PyMuPDF licence for those who need to avoid Artifex's copyleft terms
+  specifically.
 - **`caldav`** (Python lib) is **dual-licensed GPL-3.0-or-later OR Apache-2.0**.
-  Odysseus uses it under **Apache-2.0**, which is permissive and MIT-compatible.
-- **`markitdown`** (Microsoft) is **MIT** and used only as an *optional* dependency for Office/EPUB text
-  extraction (`src/markitdown_runtime.py`), lazy-imported with graceful fallback — the MIT core runs without
-  it. The cloud `az-doc-intel` extra is deliberately **not** installed, keeping extraction fully local.
+  This project elects **Apache-2.0**. Counsel should ratify that election before
+  distribution.
+- **`markitdown`** (Microsoft, **MIT**) is an optional dependency for Office/EPUB
+  text extraction (`src/markitdown_runtime.py`), lazy-imported with graceful
+  fallback. The cloud `az-doc-intel` extra is deliberately **not** installed,
+  keeping extraction fully local.
+
+Removing an optional dependency narrows the set of *other people's* copyleft
+terms you must satisfy. It does not relicense this program.
 
 ---
 

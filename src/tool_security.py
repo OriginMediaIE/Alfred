@@ -55,13 +55,18 @@ NON_ADMIN_BLOCKED_TOOLS = BUILTIN_EMAIL_TOOLS | {
     "cancel_download",
     "adopt_served_model",
     "tail_serve_output",
+    "list_served_models",
+    "list_downloads",
+    "list_cached_models",
+    "list_serve_presets",
+    "list_cookbook_servers",
 }
 
 
 # Plan mode: the agent may investigate but must not mutate anything. This
 # compatibility view is owned by the dependency-light canonical registry. It
-# remains an explicit allowlist while sixteen read-only capabilities await typed
-# policy metadata; it must not be inferred from risk until that migration lands.
+# remains an explicit allowlist because scoped diagnostics and provider-query
+# policy are deliberately different from plan-mode investigation rights.
 # Every canonical name outside this set is blocked, including newly registered
 # tools, internal vault executors, and typed diagnostics.
 #

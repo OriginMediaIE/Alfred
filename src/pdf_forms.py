@@ -9,10 +9,12 @@ import logging
 import re
 from typing import Any
 
-# PyMuPDF is an OPTIONAL dependency (AGPL-3.0), required ONLY for the PDF
-# form-filling feature implemented in this module. The MIT core imports fine
-# without it; calling these functions without PyMuPDF raises a clear error.
-# See requirements-optional.txt.
+# PyMuPDF is an OPTIONAL dependency (AGPL-3.0-or-later / commercial), required
+# ONLY for the PDF form-filling feature implemented in this module. The rest of
+# the application imports fine without it; calling these functions without
+# PyMuPDF raises a clear error. This project is itself AGPL-3.0-or-later (see
+# LICENSE) — PyMuPDF adds a separate copyright holder's copyleft terms, it does
+# not change this program's licence. See requirements-optional.txt.
 try:
     import fitz  # PyMuPDF — optional, AGPL-3.0
 except ImportError:  # pragma: no cover

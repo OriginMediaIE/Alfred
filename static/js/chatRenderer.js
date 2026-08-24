@@ -10,6 +10,9 @@ import settingsModule from './settings.js';
 import spinnerModule from './spinner.js';
 import { bindMenuDismiss } from './escMenuStack.js';
 import { matchModelKey } from './model/matchKey.js';
+import { getBrand } from './brand.js';
+
+const BRAND = getBrand();
 
 const SEARCH_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>';
 const REPORT_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>';
@@ -612,6 +615,7 @@ export function sameModelName(left, right) {
 }
 
 export function modelRouteLabel(requestedModel, actualModel) {
+  if (window._omProviderRoutingVisible === false) return BRAND.assistant_name || 'OM';
   const requested = modelValue(requestedModel);
   const actual = modelValue(actualModel) || requested;
   if (!requested || sameModelName(requested, actual)) return shortModel(actual || requested);
@@ -1999,7 +2003,7 @@ export function displayMetrics(messageElement, metrics) {
           compactMsg.className = 'msg msg-ai';
           const compactRole = document.createElement('div');
           compactRole.className = 'role';
-          compactRole.textContent = 'Odysseus';
+          compactRole.textContent = BRAND.assistant_name;
           const compactBody = document.createElement('div');
           compactBody.className = 'body';
           compactBody.innerHTML = 'Compacting context <span class="compact-wave">▁▂▃▅▂▁</span>';
@@ -2445,7 +2449,7 @@ export function addMessage(role, content, modelName, metadata) {
     const isCompacted = metadata?.compacted;
     const replyModels = replyModelPair(modelName, metadata);
     const resolvedModel = replyModels.actualModel || replyModels.requestedModel;
-    var _roleText = role === 'user' ? 'You' : (isSlash || isCompacted) ? 'Odysseus' : modelRouteLabel(replyModels.requestedModel, resolvedModel);
+    var _roleText = role === 'user' ? 'You' : (isSlash || isCompacted) ? BRAND.assistant_name : modelRouteLabel(replyModels.requestedModel, resolvedModel);
     if (role === 'assistant' && (metadata?.research || metadata?.research_clarification)) {
       _roleText += ' (Research)';
     }
@@ -2512,16 +2516,10 @@ export function addMessage(role, content, modelName, metadata) {
     if (role === 'assistant' && metadata?.rag_sources?.length) {
       findingsSuffix += buildRagSourcesBox(metadata.rag_sources);
     }
-    // If thinking is stored in metadata (not in text), reconstruct the full display
-    if (role === 'assistant' && metadata?.thinking) {
-      const thinkTime = metadata.thinking_time || null;
-      const thinkHtml = markdownModule.processWithThinking(
-        '<think' + (thinkTime ? ` time="${thinkTime}"` : '') + '>' + metadata.thinking + '</think>\n\n' + text
-      );
-      b.innerHTML = sourcesPrefix + thinkHtml + findingsSuffix;
-	    } else {
-	      b.innerHTML = sourcesPrefix + markdownModule.processWithThinking(text) + findingsSuffix;
-	    }
+	    // Never reconstruct legacy raw reasoning metadata into the DOM. Current
+	    // writes retain only a short reasoning summary; old rows are treated the
+	    // same way at render time so backups/restores cannot revive hidden text.
+	    b.innerHTML = sourcesPrefix + markdownModule.processWithThinking(text) + findingsSuffix;
 	    b.dataset.raw = text;
 
     // The vision/OCR caption is stripped from the displayed text above (so the

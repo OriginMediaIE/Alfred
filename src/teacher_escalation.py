@@ -478,17 +478,53 @@ async def escalate_and_learn(
     # Force action=add regardless of what the teacher wrote.
     skill["action"] = "add"
 
-    import json
-    from src.tool_implementations import do_manage_skills
     try:
-        result = await do_manage_skills(json.dumps(skill), owner=owner)
-        if isinstance(result, dict) and not result.get("error"):
-            logger.info(f"teacher wrote skill: {skill.get('name')}")
-            return skill.get("name")
-        logger.warning(f"skill save failed: {result}")
+        proposal = _propose_teacher_skill(skill, owner=owner)
+        logger.info(
+            "teacher proposed skill=%s approval=%s",
+            skill.get("name"),
+            proposal["id"],
+        )
     except Exception as e:
-        logger.warning(f"skill save raised: {e}")
+        logger.warning(f"skill proposal raised: {e}")
     return None
+
+
+def _propose_teacher_skill(skill: Dict[str, Any], *, owner: Optional[str]):
+    """Persist an exact skill mutation proposal without executing model output."""
+
+    import hashlib
+    import json
+
+    from src.action_ledger import get_action_ledger
+    from src.tool_actions import build_action_envelope
+    from src.tool_authorization import ExecutionOrigin, ResolvedToolIdentity
+    from src.tool_registry import ToolSurface, build_builtin_registry
+
+    canonical = json.dumps(skill, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    definition = build_builtin_registry().resolve(
+        "manage_skills", surface=ToolSurface.INTERNAL
+    )
+    identity = ResolvedToolIdentity(
+        requested_name="manage_skills",
+        canonical_name="manage_skills",
+        definition=definition,
+        surface=ToolSurface.INTERNAL,
+    )
+    envelope = build_action_envelope(
+        identity,
+        canonical,
+        owner=owner,
+        session_id=None,
+        request_id="teacher-skill:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        origin=ExecutionOrigin.SKILL_WORKFLOW,
+    )
+    return get_action_ledger().propose(
+        envelope,
+        risk_level=int(definition.effective_risk),
+        approval_reason="A teacher model proposed a persistent skill change.",
+        origin=ExecutionOrigin.SKILL_WORKFLOW.value,
+    )
 
 
 def maybe_escalate(
@@ -562,6 +598,21 @@ async def run_teacher_inline(
     student_tool_events: List[Dict[str, Any]],
     student_reply: str,
     owner: Optional[str] = None,
+    session_id: Optional[str] = None,
+    disabled_tools: Optional[set[str]] = None,
+    tool_policy: Any = None,
+    plan_mode: bool = False,
+    approved_plan: Optional[str] = None,
+    approved_plan_id: Optional[str] = None,
+    approved_plan_version: int = 0,
+    workspace: Optional[str] = None,
+    api_token_scopes: Optional[set[str]] = None,
+    active_document: Any = None,
+    active_email: Optional[Dict[str, str]] = None,
+    uploaded_files: Optional[List[Dict[str, Any]]] = None,
+    max_tool_calls: int = 0,
+    auth_manager=None,
+    execution_origin=None,
 ):
     """Async generator. Yields SSE event strings.
 
@@ -658,6 +709,8 @@ async def run_teacher_inline(
     # The _is_teacher_run flag prevents infinite recursion (the teacher
     # run will skip its own escalation hook).
     from src.agent_loop import stream_agent_loop
+    from src.tool_authorization import ExecutionOrigin
+    execution_origin = execution_origin or ExecutionOrigin.INTERACTIVE_CHAT
     captured_tool_events: List[Dict[str, Any]] = []
     captured_text_parts: List[str] = []
 
@@ -667,6 +720,21 @@ async def run_teacher_inline(
         messages=teacher_messages,
         headers=teacher_headers,
         owner=owner,
+        session_id=session_id,
+        disabled_tools=disabled_tools,
+        tool_policy=tool_policy,
+        plan_mode=plan_mode,
+        approved_plan=approved_plan,
+        approved_plan_id=approved_plan_id,
+        approved_plan_version=approved_plan_version,
+        workspace=workspace,
+        api_token_scopes=api_token_scopes,
+        active_document=active_document,
+        active_email=active_email,
+        uploaded_files=uploaded_files,
+        max_tool_calls=max_tool_calls,
+        auth_manager=auth_manager,
+        execution_origin=execution_origin,
         _is_teacher_run=True,
     ):
         # Swallow teacher's own [DONE] — outer loop emits the real one
@@ -739,28 +807,29 @@ async def run_teacher_inline(
     skill.setdefault("source", "teacher-escalation")
     skill.setdefault("teacher_model", teacher_spec)
 
-    import json as _json
-    from src.tool_implementations import do_manage_skills
     try:
-        result = await do_manage_skills(_json.dumps(skill), owner=owner)
-        if isinstance(result, dict) and not result.get("error"):
-            logger.info(f"teacher succeeded; saved skill: {skill.get('name')}")
-            yield (
-                'data: ' + json.dumps({
-                    "type": "skill_saved",
-                    "name": skill.get("name"),
-                    "category": skill.get("category", "general"),
-                }) + '\n\n'
-            )
-        else:
-            yield (
-                'data: ' + json.dumps({
-                    "type": "skill_save_failed",
-                    "reason": str(result),
-                }) + '\n\n'
-            )
+        proposal = _propose_teacher_skill(skill, owner=owner)
+        logger.info(
+            "teacher succeeded; proposed skill=%s approval=%s",
+            skill.get("name"),
+            proposal["id"],
+        )
+        yield (
+            'data: ' + json.dumps({
+                "type": "approval_required",
+                "status": "awaiting_approval",
+                "data": {
+                    "approval_id": proposal["id"],
+                    "approval_status": proposal["status"],
+                    "approval_expires_at": proposal["expires_at"],
+                    "approval_revision": proposal["revision"],
+                    "approval_url": f"/approvals/{proposal['id']}",
+                    "tool_name": proposal["tool_name"],
+                },
+            }) + '\n\n'
+        )
     except Exception as e:
-        logger.warning(f"skill save raised: {e}")
+        logger.warning(f"skill proposal raised: {e}")
         yield (
             'data: ' + json.dumps({
                 "type": "skill_save_failed",

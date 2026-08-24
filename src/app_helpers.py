@@ -7,6 +7,8 @@ from fastapi import HTTPException
 from fastapi.responses import HTMLResponse
 from starlette.requests import Request
 
+from src.branding import public_brand_json
+
 logger = logging.getLogger(__name__)
 
 def read_if_exists(path: str) -> str:
@@ -46,6 +48,7 @@ def serve_html_with_nonce(request: Request, file_path: str) -> HTMLResponse:
         raise HTTPException(500, "Internal server error")
     nonce = getattr(request.state, "csp_nonce", "")
     html = html.replace("{{CSP_NONCE}}", nonce)
+    html = html.replace("{{BRAND_CONFIG}}", public_brand_json())
     return HTMLResponse(html)
 
 

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">OM Automate</title>
+  <desc id="desc">Maskable OM Automate app icon.</desc>
+  <rect width="64" height="64" fill="#111318"/>
+  <path d="M31 15a17 17 0 1 0 0 34 17 17 0 0 0 12.3-5.2" fill="none" stroke="#69d2e7" stroke-width="5" stroke-linecap="round"/>
+  <path d="M21 41V24l10 10 10-10v17" fill="none" stroke="#f0a45d" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="46" cy="17" r="2.5" fill="#f0a45d"/>
+</svg>

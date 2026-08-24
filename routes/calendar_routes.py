@@ -14,9 +14,11 @@ from dateutil.rrule import rrulestr
 
 from core.database import SessionLocal, CalendarCal, CalendarDeletedEvent, CalendarEvent
 from src.auth_helpers import require_user
+from src.branding import get_brand_config
 from src.upload_limits import read_upload_limited, ICS_MAX_BYTES
 
 logger = logging.getLogger(__name__)
+_CALENDAR_PRODID = f"-//{get_brand_config().product_name}//Calendar//EN"
 
 
 def _ics_naive_dtstart(dt):
@@ -1436,7 +1438,7 @@ def setup_calendar_routes() -> APIRouter:
             lines = [
                 "BEGIN:VCALENDAR",
                 "VERSION:2.0",
-                "PRODID:-//Odysseus//Calendar//EN",
+                f"PRODID:{_CALENDAR_PRODID}",
                 f"X-WR-CALNAME:{_ics_escape(cal.name)}",
             ]
             for ev in events:

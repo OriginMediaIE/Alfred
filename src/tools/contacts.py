@@ -3,18 +3,28 @@
 Extracted from tool_implementations.py as part of slice 1 (#4082/#4071).
 Holds the resolve_contact and manage_contact (CardDAV CRUD) tools.
 ``src.tool_implementations`` re-exports these for backward compatibility.
-``_INTERNAL_BASE`` still lives in tool_implementations.py and is pulled
-back function-locally where needed.
+Shared internal-loopback helpers live in ``src.tools._common``.
 """
 from typing import Dict, Optional
 
-from src.tools._common import _parse_tool_args
+from src.tools._common import (
+    _INTERNAL_BASE,
+    _configured_auth_requires_owner,
+    _internal_headers,
+    _parse_tool_args,
+)
 
 
 async def do_resolve_contact(content: str, owner: Optional[str] = None) -> Dict:
-    """Look up a contact by name. Searches: CardDAV -> email history -> memory."""
+    """Look up a contact by name through authenticated observational APIs."""
     import httpx
-    from src.tool_implementations import _INTERNAL_BASE  # shared constant, still lives in the facade
+
+    if _configured_auth_requires_owner(owner):
+        return {
+            "error": "Authenticated owner is required to resolve contacts",
+            "exit_code": 1,
+        }
+
     try:
         args = _parse_tool_args(content)
     except ValueError:
@@ -24,39 +34,49 @@ async def do_resolve_contact(content: str, owner: Optional[str] = None) -> Dict:
         return {"error": "name is required", "exit_code": 1}
 
     contacts = {}  # email_or_phone -> {name, source, phone?}
-
-    # 1. CardDAV (Radicale) — structured contacts. Call in-process: a
-    # server-side httpx GET to /api/contacts/search carries no session
-    # cookie and would 401 under require_user.
-    try:
-        import asyncio
-        from routes import contacts_routes as cc
-        all_contacts = await asyncio.to_thread(cc._fetch_contacts)
-        q = name.lower()
-        for c in (all_contacts or []):
-            hay_name = (c.get("name") or "").lower()
-            match = q in hay_name or any(q in (e or "").lower() for e in c.get("emails", []))
-            if not match:
-                continue
-            has_email = False
-            for email in (c.get("emails") or []):
-                email = (email or "").strip().lower()
-                if email and "@" in email:
-                    contacts[email] = {"name": c.get("name") or email, "source": "contacts"}
-                    has_email = True
-            # Fall back to phone numbers when the contact has no email address
-            if not has_email:
-                for phone in (c.get("phones") or []):
-                    phone = (phone or "").strip()
-                    if phone:
-                        contacts[phone] = {"name": c.get("name") or phone, "source": "contacts", "phone": phone}
-    except Exception:
-        pass
-
+    headers = _internal_headers(owner)
     async with httpx.AsyncClient(timeout=30) as client:
+        # 1. CardDAV (Radicale) / local contacts.  The GET route is read-only
+        # and its admin dependency authenticates the per-process internal token.
+        # The owner header preserves human attribution for configured auth.
+        try:
+            resp = await client.get(
+                f"{_INTERNAL_BASE}/api/contacts/search",
+                params={"q": name},
+                headers=headers,
+            )
+            if resp.status_code == 200:
+                for c in (resp.json().get("results") or []):
+                    has_email = False
+                    for email in (c.get("emails") or []):
+                        email = (email or "").strip().lower()
+                        if email and "@" in email:
+                            contacts[email] = {
+                                "name": c.get("name") or email,
+                                "source": "contacts",
+                            }
+                            has_email = True
+                    # Fall back to phone numbers when the contact has no email
+                    # address, preserving the existing response contract.
+                    if not has_email:
+                        for phone in (c.get("phones") or []):
+                            phone = (phone or "").strip()
+                            if phone:
+                                contacts[phone] = {
+                                    "name": c.get("name") or phone,
+                                    "source": "contacts",
+                                    "phone": phone,
+                                }
+        except Exception:
+            pass
+
         # 2. Email history (sent/received)
         try:
-            resp = await client.get(f"{_INTERNAL_BASE}/api/email/resolve-contact", params={"name": name})
+            resp = await client.get(
+                f"{_INTERNAL_BASE}/api/email/resolve-contact",
+                params={"name": name},
+                headers=headers,
+            )
             if resp.status_code == 200:
                 for c in (resp.json().get("contacts") or []):
                     email = (c.get("email") or "").strip().lower()

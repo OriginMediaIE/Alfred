@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 <#
-  Odysseus - native Windows launcher (no Docker).
+  OM Automate - native Windows launcher (no Docker).
 
   One command to: create a virtualenv, install dependencies, run first-time
   setup (prints an admin password on first run), and start the server.
@@ -28,6 +28,16 @@ function Fail($msg) {
     Write-Host ""
     Read-Host "Press Enter to exit"
     exit 1
+}
+
+try {
+    $brandManifest = Get-Content (Join-Path $PSScriptRoot "static\manifest.json") -Raw | ConvertFrom-Json
+    $productName = [string]$brandManifest.om_automate.product_name
+    if (-not $productName -or $productName -ne [string]$brandManifest.name) {
+        throw "PWA and native product names do not match."
+    }
+} catch {
+    Fail ("Brand configuration is invalid: " + $_.Exception.Message)
 }
 
 function Test-WindowsBashStub($path) {
@@ -132,7 +142,7 @@ if (-not (Test-Path $venvPy)) {
 # 3. Install / update dependencies
 Write-Step "Installing dependencies (first run can take a few minutes)"
 & $venvPy -m pip install --upgrade pip --quiet
-& $venvPy -m pip install -r requirements.txt
+& $venvPy -m pip install -r requirements-om.lock
 if ($LASTEXITCODE -ne 0) { Fail "Dependency install failed. Scroll up for the pip error." }
 
 # 4. First-time setup (creates data dirs, DB, .env, admin user)
@@ -163,7 +173,7 @@ if (Test-Path $cudaBase) {
 }
 
 # 7. Start the server (use `python -m uvicorn` - bare `uvicorn` may not be on PATH)
-Write-Step ("Starting Odysseus at http://{0}:{1}" -f $BindHost, $Port)
+Write-Step ("Starting {0} at http://{1}:{2}" -f $productName, $BindHost, $Port)
 Write-Host "Press Ctrl+C to stop."
 Write-Host ""
 & $venvPy -m uvicorn app:app --host $BindHost --port $Port

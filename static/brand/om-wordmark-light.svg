@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 92" role="img" aria-labelledby="title">
+  <title id="title">OM Automate</title>
+  <rect x="4" y="4" width="84" height="84" rx="20" fill="#111318"/>
+  <path d="M44 20a27 27 0 1 0 0 54 27 27 0 0 0 19.5-8.2" fill="none" stroke="#69d2e7" stroke-width="7" stroke-linecap="round"/>
+  <path d="M28 61V34l16 16 16-16v27" fill="none" stroke="#f0a45d" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="68" cy="23" r="4" fill="#f0a45d"/>
+  <text x="112" y="56" fill="#18202a" font-family="Fira Code, ui-monospace, monospace" font-size="37" font-weight="600" letter-spacing="-1.4">OM Automate</text>
+  <text x="114" y="75" fill="#53616f" font-family="Fira Code, ui-monospace, monospace" font-size="10" font-weight="400" letter-spacing="1.8">PRIVATE · LOCAL · ACCOUNTABLE</text>
+</svg>

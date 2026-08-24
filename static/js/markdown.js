@@ -333,13 +333,16 @@ export function extractThinkingBlocks(text) {
  * Create a collapsible thinking section
  */
 function createThinkingSection(thinkingContent, index = 0, thinkingTime = null) {
+  // Raw chain-of-thought is untrusted private model state. The parser removes
+  // it from the answer, but the UI deliberately renders only a bounded status.
+  void thinkingContent;
   const id = `thinking-${Date.now()}-${index}`;
   const timeHtml = thinkingTime ? `<span style="font-size:11px;opacity:0.4;font-variant-numeric:tabular-nums;">${thinkingTime}s</span>` : '';
   return `
     <div class="thinking-section">
       <div class="thinking-header" data-thinking-id="${id}">
         <div class="thinking-header-left">
-          <span>View thinking process</span>
+          <span>View reasoning summary</span>
         </div>
         <div style="display:flex;align-items:center;gap:6px;">
           ${timeHtml}
@@ -348,7 +351,7 @@ function createThinkingSection(thinkingContent, index = 0, thinkingTime = null) 
       </div>
       <div class="thinking-content" id="${id}">
         <div class="thinking-content-inner">
-          ${mdToHtml(thinkingContent)}
+          Model reasoning completed. Private chain-of-thought is not displayed.
         </div>
       </div>
     </div>

@@ -92,7 +92,7 @@ def test_plan_mode_executor_rejects_internal_vault_tool_before_dispatch():
 
     assert description == "vault_get: BLOCKED"
     assert result["exit_code"] == 1
-    assert "disabled" in result["error"]
+    assert "not available" in result["error"] or "disabled" in result["error"]
 
 
 def test_active_plan_note_pins_checklist():

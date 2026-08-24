@@ -297,27 +297,33 @@ class TestHostDockerAccess:
         tmp_path,
         flag,
     ):
-        socket_path = tmp_path / "docker.sock"
-        with socket.socket(socket.AF_UNIX) as unix_socket:
-            unix_socket.bind(str(socket_path))
-            if flag is None:
-                monkeypatch.delenv("ODYSSEUS_ENABLE_HOST_DOCKER", raising=False)
-            else:
-                monkeypatch.setenv("ODYSSEUS_ENABLE_HOST_DOCKER", flag)
+        socket_path = Path("/tmp") / f"om-docker-{os.getpid()}-{id(monkeypatch)}.sock"
+        try:
+            with socket.socket(socket.AF_UNIX) as unix_socket:
+                unix_socket.bind(str(socket_path))
+                if flag is None:
+                    monkeypatch.delenv("ODYSSEUS_ENABLE_HOST_DOCKER", raising=False)
+                else:
+                    monkeypatch.setenv("ODYSSEUS_ENABLE_HOST_DOCKER", flag)
 
-            assert _host_docker_access_enabled(str(socket_path)) is False
+                assert _host_docker_access_enabled(str(socket_path)) is False
+        finally:
+            socket_path.unlink(missing_ok=True)
 
     def test_explicit_opt_in_with_unix_socket_is_enabled(
         self,
         monkeypatch,
         tmp_path,
     ):
-        socket_path = tmp_path / "docker.sock"
-        with socket.socket(socket.AF_UNIX) as unix_socket:
-            unix_socket.bind(str(socket_path))
-            monkeypatch.setenv("ODYSSEUS_ENABLE_HOST_DOCKER", "true")
+        socket_path = Path("/tmp") / f"om-docker-{os.getpid()}-{id(monkeypatch)}.sock"
+        try:
+            with socket.socket(socket.AF_UNIX) as unix_socket:
+                unix_socket.bind(str(socket_path))
+                monkeypatch.setenv("ODYSSEUS_ENABLE_HOST_DOCKER", "true")
 
-            assert _host_docker_access_enabled(str(socket_path)) is True
+                assert _host_docker_access_enabled(str(socket_path)) is True
+        finally:
+            socket_path.unlink(missing_ok=True)
 
 
 class TestPackageProbeStatus:
@@ -367,7 +373,7 @@ class TestPackageProbeStatus:
 
         assert _package_installed_from_probe("vllm", probe) is True
         assert status.available is False
-        assert "outside Odysseus" in status.note
+        assert "outside OM Automate" in status.note
 
     def test_llama_cpp_is_installed_when_native_llama_server_exists(self):
         probe = {
@@ -391,7 +397,7 @@ class TestPackageProbeStatus:
         )
 
         assert status.available is False
-        assert "Update this system dependency outside Odysseus." not in status.note
+        assert "Update this system dependency outside OM Automate." not in status.note
 
     def test_diffusers_requires_torch_too(self):
         missing_torch = {

@@ -3,10 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-visual">
-<title>Odysseus — Login</title>
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 4L16 22L6 22Z' fill='%23e06c75'/%3E%3Cpath d='M16 8L16 22L24 22Z' fill='%23e06c75' opacity='0.6'/%3E%3Cpath d='M4 24Q10 20 16 24Q22 28 28 24' stroke='%23e06c75' stroke-width='2.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<title>Sign in · OM Automate</title>
+<meta name="description" content="Sign in to OM Automate — your private AI operating system">
+<link rel="icon" type="image/svg+xml" href="/static/brand/om-mark.svg">
 <link rel="manifest" href="/static/manifest.json">
-<link rel="apple-touch-icon" href="/static/icons/icon-192.png">
+<script type="application/json" id="om-brand-config" nonce="{{CSP_NONCE}}">{{BRAND_CONFIG}}</script>
+<link rel="apple-touch-icon" href="/static/brand/om-icon-192.png">
 <script nonce="{{CSP_NONCE}}">
 (function(){
   // Per-theme bg-effect defaults — mirrors THEME_DEFAULT_* maps in
@@ -88,7 +90,7 @@
   @font-face { font-family: 'Fira Code'; font-weight: 400; font-style: normal; font-display: swap; src: url('/static/fonts/FiraCode-Regular.woff2') format('woff2'); }
   @font-face { font-family: 'Fira Code'; font-weight: 600; font-style: normal; font-display: swap; src: url('/static/fonts/FiraCode-SemiBold.woff2') format('woff2'); }
   /* Mirror the main app's :root defaults (static/style.css ~line 18) so an
-     uncustomized theme — or a fresh browser with no `odysseus-theme` in
+     uncustomized theme — or a fresh browser with no saved theme in
      localStorage — renders the login page in the same palette as the rest
      of the app instead of a different greys+offwhite scheme. */
   :root {
@@ -137,7 +139,7 @@
     font-family: 'Fira Code', monospace;
     font-size: 2rem; font-weight: 600;
     letter-spacing: 0.04em;
-    /* Same gradient as the main app's welcome-screen "Odysseus" title
+    /* Same gradient as the main app's welcome-screen title
        (static/style.css #welcome-screen .welcome-name) so the brand
        wordmark is consistent across login + first-launch screens. */
     background: linear-gradient(135deg, var(--brand-color, var(--red)), color-mix(in srgb, var(--brand-color, var(--red)) 60%, var(--fg)));
@@ -228,7 +230,11 @@
   .remember-toggle:hover .remember-dot {
     border-color: color-mix(in srgb, var(--fg) 40%, transparent);
   }
-  .logo-boat { width: 1.6rem; height: 1.6rem; margin-right: 0.4rem; vertical-align: -0.15em; color: var(--red); }
+  .logo-mark { width: 2.15rem; height: 2.15rem; margin-right: 0.55rem; vertical-align: -0.45rem; filter: drop-shadow(0 5px 12px rgba(0,0,0,.3)); }
+  .brand-positioning { margin: -0.85rem 0 1.35rem; text-align: center; color: color-mix(in srgb, var(--fg) 56%, transparent); font-size: 0.7rem; letter-spacing: 0.03em; }
+  .legal-links { position: fixed; left: 16px; bottom: 12px; z-index: 2; font-size: 0.68rem; }
+  .legal-links a { color: color-mix(in srgb, var(--fg) 52%, transparent); text-underline-offset: 3px; }
+  .legal-links a:hover { color: var(--fg); }
   .version-label {
     position: fixed; bottom: 12px; right: 16px;
     font-size: 0.7rem; opacity: 0.25;
@@ -250,11 +256,12 @@
   @keyframes login-spin { to { transform: rotate(360deg); } }
 </style>
 </head>
-<body>
+<body data-brand-page="login">
 <main class="card">
   <h1 class="logo">
-    <svg class="logo-boat" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><path d="M16 4L16 22L6 22Z" fill="currentColor"/><path d="M16 8L16 22L24 22Z" fill="currentColor" opacity="0.6"/><path d="M4 24Q10 20 16 24Q22 28 28 24" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round"/></svg><span>Odysseus</span>
+    <img class="logo-mark" src="/static/brand/om-mark.svg" alt=""><span data-brand-text="product_name">OM Automate</span>
   </h1>
+  <p class="brand-positioning" data-brand-text="positioning">Your private AI operating system</p>
   <p class="setup-note" id="setupNote" style="display:none"></p>
 
   <div class="error" id="error" role="alert" aria-live="assertive"></div>
@@ -296,6 +303,7 @@
   </div>
 </main>
 
+<footer class="legal-links"><a href="/static/legal.html" data-brand-href="links.legal">Legal &amp; source</a></footer>
 <footer class="version-label" id="version-label"></footer>
 
 <script nonce="{{CSP_NONCE}}">
@@ -361,6 +369,21 @@
     }
   }
 
+  async function postLoginTarget() {
+    try {
+      const [statusRes, completedRes] = await Promise.all([
+        fetch('/api/auth/status', { credentials: 'same-origin' }),
+        fetch('/api/prefs/onboarding_local_llm_completed', { credentials: 'same-origin' }),
+      ]);
+      const status = statusRes.ok ? await statusRes.json() : {};
+      const completed = completedRes.ok ? await completedRes.json() : {};
+      if (status.internal_test_defaults && completed.value !== true) {
+        return '/cookbook?onboarding=local-llm';
+      }
+    } catch (_) { /* fall back to the normal home screen */ }
+    return '/';
+  }
+
   // Check auth status and fetch policy in parallel, but don't block the
   // authenticated redirect on the policy response.
   const policyPromise = fetch('/api/auth/policy', { credentials: 'same-origin' }).catch(() => null);
@@ -368,7 +391,7 @@
     const statusRes = await fetch('/api/auth/status', { credentials: 'same-origin' });
     const data = await statusRes.json();
     if (data.authenticated) {
-      window.location.replace('/');
+      window.location.replace(await postLoginTarget());
       return;
     }
     signupAllowed = !!data.signup_enabled;
@@ -484,7 +507,7 @@
         sessionStorage.setItem('ody-prefetch-sessions', JSON.stringify(sess));
         sessionStorage.setItem('ody-prefetch-features', JSON.stringify(feat));
         sessionStorage.setItem('ody-prefetch-settings', JSON.stringify(sett));
-      }).catch(() => {}).finally(() => { window.location.replace('/'); });
+      }).catch(() => {}).finally(async () => { window.location.replace(await postLoginTarget()); });
     }
     async function doLogin(totpCode) {
       const loginBody = { username, password, remember };
@@ -575,6 +598,7 @@ if (window.visualViewport) {
 }
 </script>
 <script type="module" nonce="{{CSP_NONCE}}">
+import '/static/js/brand.js';
 // Drive the login page's bg effect off the user's saved theme. The
 // sync bootstrap above already set the body class + effect CSS vars so
 // the static-gradient patterns (dots, synapse) paint immediately; this

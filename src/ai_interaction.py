@@ -1005,7 +1005,11 @@ async def do_generate_image(content: str, session_id: Optional[str] = None, owne
         else:
             payload["quality"] = "medium"
 
-    logger.info(f"Image generation: model={model_id}, size={size}, quality={quality}, prompt={prompt[:80]}")
+    from services.privacy_service import get_privacy_service
+    if get_privacy_service().get(owner).get("model_logging_enabled", False):
+        logger.info("Image generation: model=%s size=%s quality=%s prompt=%s", model_id, size, quality, prompt[:80])
+    else:
+        logger.info("Image generation: model=%s size=%s quality=%s prompt_logging=disabled", model_id, size, quality)
 
     try:
         # GPT image models can take 30-120s+ depending on quality

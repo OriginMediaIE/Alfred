@@ -1,16 +1,93 @@
 {
-  "name": "Odysseus",
-  "short_name": "Odysseus",
-  "description": "Self-hosted AI chat with memory, documents, and tools",
+  "id": "/",
+  "name": "OM Automate",
+  "short_name": "OM",
+  "description": "Your private AI operating system",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#282c34",
-  "theme_color": "#282c34",
+  "background_color": "#111318",
+  "theme_color": "#111318",
+  "categories": ["productivity", "utilities"],
   "icons": [
-    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
-    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
-    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
-  ]
+    { "src": "/static/brand/om-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/brand/om-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/brand/om-icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "om_automate": {
+    "schema_version": 1,
+    "product_name": "OM Automate",
+    "assistant_name": "OM",
+    "positioning": "Your private AI operating system",
+    "assets": {
+      "logo_light": "/static/brand/om-wordmark-light.svg",
+      "logo_dark": "/static/brand/om-wordmark-dark.svg",
+      "icon": "/static/brand/om-mark.svg",
+      "icon_maskable": "/static/brand/om-mark-maskable.svg",
+      "favicon": "/static/brand/om-mark.svg",
+      "apple_touch_icon": "/static/brand/om-icon-192.png",
+      "alt_text": "OM Automate"
+    },
+    "titles": {
+      "default": "OM Automate",
+      "login": "Sign in · OM Automate",
+      "legal": "Legal & source · OM Automate",
+      "routes": {
+        "/": "Chat · OM Automate",
+        "/calendar": "Calendar · OM Automate",
+        "/notes": "Notes · OM Automate",
+        "/cookbook": "Models · OM Automate",
+        "/email": "Inbox · OM Automate",
+        "/memory": "Knowledge · OM Automate",
+        "/gallery": "Gallery · OM Automate",
+        "/tasks": "Tasks · OM Automate",
+        "/library": "Documents · OM Automate",
+        "/approvals": "Approval Centre · OM Automate"
+      }
+    },
+    "navigation": {
+      "home": "Home",
+      "chat": "Chat",
+      "calendar": "Calendar",
+      "inbox": "Inbox",
+      "tasks": "Tasks",
+      "projects": "Projects",
+      "meetings": "Meetings",
+      "knowledge": "Knowledge",
+      "documents": "Documents",
+      "contacts": "Contacts",
+      "automations": "Automations",
+      "integrations": "Integrations",
+      "activity": "Activity",
+      "approvals": "Approval Centre",
+      "settings": "Settings"
+    },
+    "links": {
+      "support": "/static/legal.html#support",
+      "documentation": "/static/legal.html#help",
+      "source": "https://github.com/odysseus-dev/odysseus/tree/9844a2f9a1996b8c8135a9e7bbde6a72f41df5ed",
+      "legal": "/static/legal.html"
+    },
+    "copy": {
+      "welcome": "Ready when you are. Ask OM, or type /setup to connect a model.",
+      "empty_state": "Nothing needs your attention right now.",
+      "message_placeholder": "Message OM…",
+      "default_persona": "You are OM, the user's private executive AI companion inside OM Automate. Be clear, grounded and discreet. Plan before acting, use only permitted tools, request approval for consequential actions, verify outcomes and state uncertainty honestly. Keep the user's goals, privacy and control at the centre of every response."
+    },
+    "native_labels": {
+      "application": "OM Automate",
+      "launcher": "Open OM Automate",
+      "service": "OM Automate"
+    },
+    "theme": {
+      "background": "#111318",
+      "surface": "#191c22",
+      "foreground": "#d9dee8",
+      "accent": "#69d2e7",
+      "signal": "#f0a45d",
+      "success": "#63d297",
+      "danger": "#ee6b72"
+    }
+  }
 }

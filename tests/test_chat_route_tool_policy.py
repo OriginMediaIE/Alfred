@@ -80,17 +80,11 @@ def test_allow_web_search_reads_from_body_as_fallback():
 
 
 def test_disabled_tools_respects_missing_vs_explicit_toggles():
-    """Bash still defers to privileges, but web is an explicit per-turn opt-in.
-    """
+    """Shell/files and web are explicit per-turn opt-ins."""
     source = _CHAT_ROUTES.read_text(encoding="utf-8")
 
-    # The fix changes:
-    #   if str(allow_bash).lower() != "true":
-    # to:
-    #   if allow_bash is not None and str(allow_bash).lower() != "true":
-    assert "allow_bash is not None" in source, (
-        "disabled_tools check must guard against allow_bash being None"
-    )
+    assert 'if str(allow_bash).lower() != "true"' in source
+    assert "disabled_tools.update(_SHELL_AND_FILE_TOOLS)" in source
     assert "web_search_enabled_for_turn(allow_web_search, use_web)" in source, (
         "web tools must be gated through the explicit per-turn web setting"
     )
@@ -120,9 +114,12 @@ def _build_disabled_tools(
     """
     disabled_tools = set()
 
-    # Issue #3229 fix: only disable bash when explicitly set to a falsy value.
-    if allow_bash is not None and str(allow_bash).lower() != "true":
-        disabled_tools.add("bash")
+    shell_group = {
+        "bash", "python", "read_file", "write_file", "edit_file",
+        "grep", "glob", "ls", "get_workspace", "manage_bg_jobs",
+    }
+    if str(allow_bash).lower() != "true":
+        disabled_tools.update(shell_group)
     search_enabled = web_search_enabled_for_turn(allow_web_search, use_web)
     if is_web_search_explicitly_denied(allow_web_search) or not search_enabled:
         disabled_tools.update(WEB_TOOL_NAMES)
@@ -145,7 +142,7 @@ def _build_disabled_tools(
 
     # Enforce per-user privileges
     if not can_use_bash:
-        disabled_tools.update({"bash", "python", "read_file", "write_file"})
+        disabled_tools.update(shell_group)
     if not can_use_browser:
         disabled_tools.add("builtin_browser")
     if global_disabled and isinstance(global_disabled, list):
@@ -161,9 +158,9 @@ def test_json_body_allow_bash_true_enables_bash():
 
 
 def test_json_body_allow_bash_false_disables_bash():
-    """API caller sending {"allow_bash": false} gets bash disabled."""
+    """API caller sending false loses the whole shell/files capability."""
     disabled = _build_disabled_tools(allow_bash="false")
-    assert "bash" in disabled
+    assert {"bash", "python", "read_file", "edit_file", "manage_bg_jobs"} <= disabled
 
 
 def test_json_body_allow_web_search_true_enables_web():
@@ -232,12 +229,9 @@ def test_prompt_web_intent_does_not_enable_web_without_setting():
     assert "web_fetch" in disabled
 
 
-def test_admin_user_gets_bash_enabled_by_default():
-    """When allow_bash is not set and user has can_use_bash privilege,
-    bash must NOT be disabled.
-    """
+def test_admin_user_does_not_get_bash_without_turn_opt_in():
     disabled = _build_disabled_tools(allow_bash=None, can_use_bash=True)
-    assert "bash" not in disabled
+    assert {"bash", "python", "read_file", "manage_bg_jobs"} <= disabled
 
 
 def test_web_search_disabled_by_default_without_explicit_turn_setting():

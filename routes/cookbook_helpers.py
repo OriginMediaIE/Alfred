@@ -1325,7 +1325,7 @@ def _diagnose_serve_output(text: str) -> dict | None:
             "MLX-LM tried to quantize an already-quantized DeepSeek switch layer.",
             [
                 {"label": "relaunch from the cached local Hugging Face snapshot path on this Mac", "op": "manual"},
-                {"label": "Odysseus now rewrites MLX repo-id launches to a cached snapshot when one exists", "op": "manual"},
+                {"label": "OM Automate now rewrites MLX repo-id launches to a cached snapshot when one exists", "op": "manual"},
             ],
         ),
         # System build deps come BEFORE the generic llama.cpp catch-all so

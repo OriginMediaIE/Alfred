@@ -1,18 +1,26 @@
 # Companion bridge
 
 A thin, additive layer so a LAN client (e.g. a phone) can discover what an
-Odysseus server offers and pair to it, without duplicating any LLM logic.
+OM Automate server offers and pair to it, without duplicating any LLM logic.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | GET | `/api/companion/ping` | session or token | cheap, auth-validated health check |
 | GET | `/api/companion/info` | session or token | server identity + capability flags |
 | GET | `/api/companion/models` | session or token | the **caller's own** model endpoints |
+| GET | `/api/companion/today` | `companion:read` token or session | owner-scoped Today view |
+| GET | `/api/companion/approvals` | `approvals:read` token or session | pending approvals, read-only |
+| GET | `/api/companion/notifications` | `companion:read` token or session | due reminders and counts |
 | GET | `/api/companion/pair` | **admin cookie** | pairing page (a form; never mints) |
 | POST | `/api/companion/pair` | **admin cookie** | mint a one-time pairing token (`?format=json` for an in-app screen) |
 
 `/models` scopes to the caller's real owner plus legacy null-owner shared rows
 (same rule as `owner_filter`) and never returns API-key material.
+
+The responsive client is `/static/companion.html`. It uses the existing
+`/api/v1/chat` route and stores its pairing token in browser session storage,
+not persistent local storage. Pairing tokens include `chat`, `companion:read`,
+and `approvals:read`; approval decisions remain in the full authenticated app.
 
 ## Pairing CSRF posture
 

@@ -425,11 +425,47 @@ class TestProbeSingleModel:
 
         def fake_post(url, headers=None, json=None, timeout=None, verify=None):
             captured["payload"] = json
-            return _resp(200, json={"content": []})
+            return _resp(200, json={"content": [{"type": "tool_use", "name": "test", "input": {}}]})
 
         monkeypatch.setattr(model_routes.httpx, "post", fake_post)
-        _probe_single_model("https://api.anthropic.com/v1", "sk-ant", "claude-sonnet-4-5", with_tools=True)
+        result = _probe_single_model("https://api.anthropic.com/v1", "sk-ant", "claude-sonnet-4-5", with_tools=True)
         assert "input_schema" in captured["payload"]["tools"][0]
+        assert result["tool_call_verified"] is True
+
+    def test_tool_probe_rejects_prose_only_success(self, monkeypatch):
+        _patch_resolve(monkeypatch)
+
+        def fake_post(url, headers=None, json=None, timeout=None, verify=None):
+            return _resp(200, json={"choices": [{"message": {"content": "OK"}}]})
+
+        monkeypatch.setattr(model_routes.httpx, "post", fake_post)
+        result = _probe_single_model(
+            "https://api.example.com/v1", "key", "m", with_tools=True
+        )
+        assert result["status"] == "fail"
+        assert result["tool_call_verified"] is False
+
+    def test_openai_tool_probe_requires_native_call(self, monkeypatch):
+        _patch_resolve(monkeypatch)
+
+        def fake_post(url, headers=None, json=None, timeout=None, verify=None):
+            return _resp(200, json={
+                "choices": [{"message": {"tool_calls": [{
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "test", "arguments": "{}"},
+                }]}}]
+            })
+
+        monkeypatch.setattr(model_routes.httpx, "post", fake_post)
+        result = _probe_single_model(
+            "https://api.example.com/v1", "key", "m", with_tools=True
+        )
+        assert result == {
+            "status": "ok",
+            "latency_ms": result["latency_ms"],
+            "tool_call_verified": True,
+        }
 
     def test_chatgpt_subscription_skips_completion_probe(self, monkeypatch):
         # This provider speaks the Responses/Codex API. A chat-completions probe

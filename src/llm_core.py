@@ -634,6 +634,14 @@ def _build_ollama_payload(
         "messages": _ollama_normalize_messages(messages),
         "stream": stream,
     }
+    # Keep native Ollama consistent with its OpenAI-compatible surface. Qwen3,
+    # Qwen3.5, Gemma thinking variants, and similar models can otherwise return
+    # only a ``thinking`` field after a tool result, leaving the user-visible
+    # assistant content empty. OM does not expose private chain-of-thought, so
+    # disable it and require the model to emit the actionable tool call/final
+    # answer in the normal message fields.
+    if _supports_thinking(model):
+        payload["think"] = False
     options: Dict = {}
     if temperature is not None:
         options["temperature"] = temperature
@@ -951,7 +959,7 @@ def _provider_headers(provider: str, headers: Optional[Dict] = None) -> Dict[str
         h.update(headers)
     if provider == "openrouter":
         h.setdefault("HTTP-Referer", "https://github.com/pewdiepie-archdaemon/odysseus")
-        h.setdefault("X-OpenRouter-Title", "Odysseus")
+        h.setdefault("X-OpenRouter-Title", "OM Automate")
     if provider == "copilot":
         # Ensure the Copilot-required headers are present even when the caller
         # didn't pass pre-built headers (e.g. model listing). build_headers()

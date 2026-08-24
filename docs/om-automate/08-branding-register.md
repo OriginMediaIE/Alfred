@@ -2,13 +2,34 @@
 
 ## Document status
 
-- **Status:** baseline inventory and migration plan; it does not claim that rebranding is complete.
+- **Status:** implementation in progress. The primary web/PWA/docs/native display layer is rebranded; compatibility and generated-output work remains, so this document does not claim full release acceptance.
 - **Audit date:** 2026-07-18.
 - **Audited source:** upstream `main` commit `9844a2f9a1996b8c8135a9e7bbde6a72f41df5ed`, working branch `om-automate/main`.
 - **Canonical product name:** **OM Automate**.
 - **Canonical assistant name:** **OM**.
 - **Canonical positioning:** **Your private AI operating system**.
 - **Legal rule:** product branding may change; copyright, licence, source-offer and factual provenance notices must not be removed. See `docs/om-automate/licence-and-attribution-review.md`.
+
+## Implementation checkpoint — 2026-07-18
+
+The finding register below preserves baseline evidence. Current implementation is:
+
+| Surface | Current state | Evidence / decision |
+|---|---|---|
+| Central public brand contract | Implemented and validated | `static/manifest.json` owns the non-sensitive `om_automate` projection; `src/branding.py` rejects extra/incomplete values and `src/app_helpers.py` injects script-safe JSON |
+| Web/PWA identity | Implemented | Main shell, login, route titles, manifest, service-worker cache, favicon/touch icon, assistant role, welcome/empty/message copy and help/legal entry use OM Automate/OM |
+| Source artwork | Primary assets implemented; archive removal/ownership review remain | Source SVGs and deterministic PNG/ICO generator live under `static/brand/` and `scripts/generate_brand_assets.py`; old PWA icon URLs now serve pixel-identical OM compatibility aliases. Three unreferenced legacy documentation binaries remain because the destructive-action approval gate rejected their removal; they are not linked by current docs |
+| Default persona/examples | Implemented for the primary browser preset | Compatibility preset ID `odysseus` is retained, but its visible name/persona is OM; the Odyssey example and `/odyssey` command were removed |
+| Legal/source access | Implemented | `static/legal.html` separates factual upstream provenance, exact baseline commit, AGPL, acknowledgements, source and modification notice from product identity |
+| Documentation | Implemented for entry/setup/deployment pages | `README.md`, `docs/index.html`, `docs/setup.md`, and the deployment guide present OM Automate and preserve upstream attribution only in legal/source context |
+| Persisted/protocol identifiers | Deliberately retained | Existing `ODYSSEUS_*`, `odysseus-*` storage/events, API routes, Docker service/volume, paths, model prefixes and plugin names are compatibility contracts, not display-name inputs |
+| Native/package display names | Implemented; package runtime verification remains | Launcher, setup, macOS/Windows build scripts, PyInstaller artifact names and systemd description consume the central labels/assets; stable `ODYSSEUS_*`, `odysseus-ui` and `com.odysseus.launcher` identifiers remain for compatibility |
+| Generated server copy/integrations | Human-facing copy implemented; identifier migration remains | Agent personas, reminder mail, reports, notifications, OAuth/TOTP, errors, MCP/email results and integration skill instructions use OM. Legacy mail subjects remain read-only fallbacks; external skill/env/header/route IDs stay compatible pending a versioned migration |
+| Runtime/browser acceptance | Not run | Static and unit tests pass; installed PWA upgrade, screenshots/OCR, native bundle inspection, email/notification rendering and cross-platform browser smoke remain release gates |
+
+The visual direction is an executive instrument rather than a chat mascot: a
+near-black neutral system, cyan OM circuit/ring mark, and amber signal token for
+attention/approval. Light/dark wordmarks and maskable assets share this geometry.
 
 ## Classification rules
 

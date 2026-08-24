@@ -1,0 +1,26 @@
+@font-face { font-family: 'Fira Code'; font-weight: 400; font-style: normal; font-display: swap; src: url('/static/fonts/FiraCode-Regular.woff2') format('woff2'); }
+@font-face { font-family: 'Fira Code'; font-weight: 600; font-style: normal; font-display: swap; src: url('/static/fonts/FiraCode-SemiBold.woff2') format('woff2'); }
+:root { color-scheme: dark; --bg:#111318; --surface:#191c22; --fg:#d9dee8; --muted:#82909f; --line:#2a303a; --accent:#69d2e7; --signal:#f0a45d; }
+* { box-sizing: border-box; }
+html { background: var(--bg); }
+body { min-height:100vh; margin:0; color:var(--fg); background: radial-gradient(circle at 86% 8%, rgba(105,210,231,.09), transparent 25rem), linear-gradient(135deg, rgba(240,164,93,.035), transparent 45%), var(--bg); font-family:'Fira Code', ui-monospace, monospace; }
+a { color:var(--accent); text-underline-offset:4px; }
+a:focus-visible { outline:2px solid var(--signal); outline-offset:4px; }
+.legal-header { max-width:1120px; margin:auto; padding:28px clamp(22px,5vw,68px); display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--line); }
+.legal-header img { width:min(310px,55vw); height:auto; }
+.back-link { color:var(--muted); font-size:.72rem; text-decoration:none; }
+.back-link:hover { color:var(--fg); }
+main { width:min(980px,calc(100% - 44px)); margin:0 auto; padding:clamp(54px,9vw,118px) 0; }
+.eyebrow { margin:0 0 20px; color:var(--signal); font-size:.66rem; letter-spacing:.2em; text-transform:uppercase; }
+h1 { max-width:800px; margin:0; font-size:clamp(2.6rem,8vw,6.6rem); line-height:.92; letter-spacing:-.075em; font-weight:600; }
+.lede { max-width:780px; margin:34px 0 80px; color:var(--muted); font-size:clamp(.95rem,2vw,1.2rem); line-height:1.75; }
+section { display:grid; grid-template-columns:66px 1fr; gap:24px; padding:36px 0; border-top:1px solid var(--line); }
+.section-number { color:var(--signal); font-size:.7rem; padding-top:5px; }
+h2 { margin:0 0 16px; font-size:1.05rem; letter-spacing:-.025em; }
+section p { max-width:760px; margin:0 0 14px; color:var(--muted); font-size:.82rem; line-height:1.8; }
+code { color:var(--fg); overflow-wrap:anywhere; }
+.link-row { display:flex; gap:10px 24px; flex-wrap:wrap; margin-top:20px; }
+.link-row a { font-size:.73rem; }
+footer { max-width:1120px; margin:auto; padding:26px clamp(22px,5vw,68px) 34px; display:flex; justify-content:space-between; gap:20px; border-top:1px solid var(--line); color:var(--muted); font-size:.66rem; }
+@media (max-width:640px) { .legal-header { align-items:flex-start; flex-direction:column-reverse; gap:22px; } section { grid-template-columns:1fr; gap:10px; } .lede { margin-bottom:54px; } footer { flex-direction:column; } }
+@media (prefers-reduced-motion:reduce) { * { scroll-behavior:auto !important; } }

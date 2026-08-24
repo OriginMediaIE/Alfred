@@ -153,10 +153,39 @@ def test_suggest_document_active_id_filters_to_calling_owner(monkeypatch):
     assert ("owner", "eq", "alice") in query.filters
 
 
-def test_document_tool_dispatch_forwards_owner():
-    source = open("src/tool_execution.py", encoding="utf-8").read()
+def test_document_tool_dispatch_forwards_owner(monkeypatch):
+    import src.agent_tools as live_agent_tools
+    import src.tool_execution as execution
+    from src.tool_registry import ToolSurface, build_builtin_registry
 
-    assert "_document_tool_dispatch(tool, content, session_id, owner)" in source
+    captured = {}
+
+    async def handler(content, ctx):
+        captured.update(content=content, ctx=ctx)
+        return {"output": "ok", "exit_code": 0}
+
+    monkeypatch.setitem(live_agent_tools.TOOL_HANDLERS, "create_document", handler)
+    definition = build_builtin_registry().resolve(
+        "create_document", surface=ToolSurface.FENCE
+    )
+    binding = execution.ResolvedRuntimeBinding(
+        definition=definition,
+        kind=execution.RuntimeBindingKind.LEGACY_DISPATCH,
+        namespace="",
+        target="create_document",
+    )
+    asyncio.run(
+        execution._dispatch_resolved_binding(
+            binding,
+            '{"title":"Owned","content":"Body"}',
+            session_id="session-1",
+            owner="alice",
+            request_id="request-1",
+            progress_cb=None,
+        )
+    )
+    assert captured["ctx"]["owner"] == "alice"
+    assert captured["ctx"]["session_id"] == "session-1"
 
     # Also verify TOOL_HANDLERS has the expected entries
     for key in ("create_document", "update_document", "edit_document",

@@ -1,4 +1,4 @@
-// Odysseus UI — Initialization Scripts
+// OM Automate UI — Initialization Scripts
 // ES6 module — extracted from index.html inline scripts
 
 import Storage from './storage.js';

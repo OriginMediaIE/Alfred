@@ -1,0 +1,6 @@
+# OM Automate optional feature profile. Install only after reviewing feature
+# licences; PyMuPDF is AGPL/commercial dual-licensed.
+faster-whisper==1.2.1
+ddgs==9.14.4
+PyMuPDF==1.28.0
+markitdown[docx,pptx,xlsx,xls]==0.1.6

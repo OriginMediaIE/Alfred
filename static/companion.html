@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#111315">
+  <title>Alfred Private OS</title>
+  <style>
+    :root{color-scheme:dark;--bg:#111315;--panel:#1a1d20;--line:#34383c;--text:#f2f3ef;--muted:#aeb4b8;--accent:#86c8a7;--warn:#e9b872;--danger:#ef8e8e}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0}
+    header{position:sticky;top:0;z-index:2;display:flex;align-items:center;justify-content:space-between;min-height:58px;padding:env(safe-area-inset-top) 16px 0;background:#111315e8;border-bottom:1px solid var(--line);backdrop-filter:blur(12px)}
+    h1{font-size:17px;margin:0}button,input,textarea{font:inherit}button{color:var(--text);background:transparent;border:1px solid var(--line);border-radius:6px;min-height:40px;padding:8px 12px}button.primary{background:var(--accent);border-color:var(--accent);color:#0b1711;font-weight:700}
+    main{max-width:720px;margin:auto;padding:16px 16px calc(90px + env(safe-area-inset-bottom))}.connect{display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:16px}.connect input{width:100%;min-height:42px;background:var(--panel);border:1px solid var(--line);border-radius:6px;color:var(--text);padding:8px 10px}
+    .status{font-size:12px;color:var(--muted);margin:0 0 12px}.status.error{color:var(--danger)}section{display:none}section.active{display:block}.list{display:grid;gap:8px}.item{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px}.item strong{display:block;margin-bottom:3px}.meta{color:var(--muted);font-size:12px}.count{color:var(--accent);font-variant-numeric:tabular-nums}.empty{color:var(--muted);padding:24px 0;text-align:center}
+    .chat-log{display:grid;gap:8px;margin-bottom:12px}.bubble{padding:11px 12px;border:1px solid var(--line);border-radius:6px;white-space:pre-wrap}.bubble.user{margin-left:32px;background:#20262a}.bubble.assistant{margin-right:20px;background:var(--panel)}.composer{display:grid;grid-template-columns:1fr auto;gap:8px}.composer textarea{min-height:44px;max-height:140px;resize:vertical;background:var(--panel);border:1px solid var(--line);border-radius:6px;color:var(--text);padding:10px}
+    nav{position:fixed;left:0;right:0;bottom:0;z-index:3;display:grid;grid-template-columns:repeat(4,1fr);padding:6px 8px calc(6px + env(safe-area-inset-bottom));background:#16191bed;border-top:1px solid var(--line);backdrop-filter:blur(14px)}nav button{border:0;color:var(--muted);min-height:48px;padding:6px 3px;font-size:12px}nav button.active{color:var(--accent);font-weight:700}
+    @media (min-width:721px){nav{left:50%;right:auto;width:720px;transform:translateX(-50%)}}
+  </style>
+</head>
+<body>
+  <header><h1>Alfred Private OS</h1><button id="refresh" aria-label="Refresh">Refresh</button></header>
+  <main>
+    <div class="connect"><input id="token" type="password" autocomplete="off" placeholder="Pairing token" aria-label="Pairing token"><button id="connect" class="primary">Connect</button></div>
+    <p id="status" class="status">Not connected</p>
+    <section id="today" class="active"><div id="today-list" class="list"></div></section>
+    <section id="approvals"><div id="approval-list" class="list"></div></section>
+    <section id="notifications"><div id="notification-list" class="list"></div></section>
+    <section id="chat"><div id="chat-log" class="chat-log"></div><div class="composer"><textarea id="chat-input" rows="1" placeholder="Ask Alfred" aria-label="Message"></textarea><button id="send" class="primary">Send</button></div></section>
+  </main>
+  <nav aria-label="Companion views">
+    <button class="active" data-view="today">Today</button><button data-view="approvals">Approvals</button><button data-view="notifications">Alerts</button><button data-view="chat">Chat</button>
+  </nav>
+  <script>
+    const $=id=>document.getElementById(id), state={token:sessionStorage.getItem('alfred-companion-token')||'',session:null};
+    $('token').value=state.token;
+    const status=(text,error=false)=>{$('status').textContent=text;$('status').className=`status${error?' error':''}`};
+    const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    async function api(path,options={}){if(!state.token)throw new Error('Enter a pairing token');const response=await fetch(path,{...options,headers:{Authorization:`Bearer ${state.token}`,'Content-Type':'application/json',...(options.headers||{})}});if(!response.ok){let detail=`Request failed (${response.status})`;try{detail=(await response.json()).detail||detail}catch{}throw new Error(detail)}return response.json()}
+    const title=item=>item.title||item.name||item.summary||item.message||item.action_type||'Item';
+    function renderList(target,items,detail){$(target).innerHTML=items.length?items.map(item=>`<article class="item"><strong>${esc(title(item))}</strong><div class="meta">${esc(detail(item))}</div></article>`).join(''):'<div class="empty">Nothing pending</div>'}
+    async function loadToday(){const data=await api('/api/companion/today');const items=[];for(const [group,value] of Object.entries(data)){if(Array.isArray(value))value.slice(0,12).forEach(item=>items.push({...item,_group:group}))}renderList('today-list',items,item=>item._group.replaceAll('_',' '))}
+    async function loadApprovals(){const data=await api('/api/companion/approvals');renderList('approval-list',data.actions||[],item=>`${item.action_type||'action'} · ${item.status||'pending'}`)}
+    async function loadNotifications(){const data=await api('/api/companion/notifications');renderList('notification-list',data.reminders||[],item=>item.remind_at?new Date(item.remind_at).toLocaleString():'Due');}
+    async function refresh(){try{status('Refreshing');await Promise.all([loadToday(),loadApprovals(),loadNotifications()]);status('Connected')}catch(error){status(error.message,true)}}
+    $('connect').onclick=()=>{state.token=$('token').value.trim();sessionStorage.setItem('alfred-companion-token',state.token);refresh()};$('refresh').onclick=refresh;
+    document.querySelectorAll('nav button').forEach(button=>button.onclick=()=>{document.querySelectorAll('nav button,main section').forEach(node=>node.classList.remove('active'));button.classList.add('active');$(button.dataset.view).classList.add('active')});
+    $('send').onclick=async()=>{const input=$('chat-input'),message=input.value.trim();if(!message)return;input.value='';$('chat-log').insertAdjacentHTML('beforeend',`<div class="bubble user">${esc(message)}</div>`);try{const data=await api('/api/v1/chat',{method:'POST',body:JSON.stringify({message,session:state.session})});state.session=data.session_id;$('chat-log').insertAdjacentHTML('beforeend',`<div class="bubble assistant">${esc(data.response)}</div>`)}catch(error){status(error.message,true)}};
+    if(state.token)refresh();
+  </script>
+</body>
+</html>

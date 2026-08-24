@@ -10,6 +10,7 @@ import secrets
 import threading
 import time
 import logging
+import hashlib
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
@@ -38,10 +39,28 @@ DEFAULT_PRIVILEGES = {
     # we need a dedicated flag to express "this user may use no models at all"
     # distinctly from "this user has no restriction".
     "block_all_models": False,
+    # Granular registry permissions are resolved at execution time.  Regular
+    # users inherit only capabilities already allowed by the legacy coarse
+    # privilege/public gates, then this list removes individual scopes.  This
+    # is deny-only during migration so adding the field cannot widen authority.
+    "denied_tool_permissions": [],
 }
 
 # Admins get everything
-ADMIN_PRIVILEGES = {k: (True if isinstance(v, bool) else (0 if isinstance(v, int) else [])) for k, v in DEFAULT_PRIVILEGES.items()}
+ADMIN_PRIVILEGES = {
+    k: (
+        True
+        if isinstance(v, bool)
+        else 0
+        if isinstance(v, int)
+        else []
+        if isinstance(v, list)
+        else {}
+        if isinstance(v, dict)
+        else v
+    )
+    for k, v in DEFAULT_PRIVILEGES.items()
+}
 ADMIN_PRIVILEGES["allowed_models_restricted"] = False
 # Admins must never be blocked from using models — the generic dict
 # comprehension above flips every boolean default to True, which would be
@@ -51,6 +70,9 @@ ADMIN_PRIVILEGES["block_all_models"] = False
 from src.constants import AUTH_FILE, PASSWORD_MIN_LENGTH
 DEFAULT_AUTH_PATH = AUTH_FILE
 TOKEN_TTL = 60 * 60 * 24 * 7  # 7 days
+LOGIN_FAILURE_LIMIT = 5
+LOGIN_FAILURE_WINDOW = 15 * 60
+LOGIN_LOCKOUT_SECONDS = 15 * 60
 
 # Usernames the auth + middleware layer reserve as internal "synthetic owner"
 # sentinels; they must never belong to a real account. The most dangerous is
@@ -100,6 +122,7 @@ class AuthManager:
     def __init__(self, auth_path: str = DEFAULT_AUTH_PATH):
         self.auth_path = auth_path
         self._sessions_path = os.path.join(os.path.dirname(auth_path), "sessions.json")
+        self._auth_audit_path = os.path.join(os.path.dirname(auth_path), "auth_audit.jsonl")
         self._config: Dict[str, Any] = {}
         self._sessions: Dict[str, Dict[str, Any]] = {}  # token -> {username, expiry}
         # Guards mutations of self._sessions and the on-disk sessions.json.
@@ -112,6 +135,10 @@ class AuthManager:
         # Guards the first-run setup check-and-write so concurrent requests
         # cannot both observe is_configured==False and both create admin accounts.
         self._setup_lock = threading.Lock()
+        self._auth_audit_lock = threading.Lock()
+        self._login_failures: Dict[str, List[float]] = {}
+        self._login_lockouts: Dict[str, float] = {}
+        self._auth_store_state = "absent"
         self._load()
         self._load_sessions()
         self._migrate_single_user()
@@ -122,7 +149,25 @@ class AuthManager:
         try:
             if os.path.exists(self.auth_path):
                 with open(self.auth_path, "r", encoding="utf-8") as f:
-                    self._config = json.load(f)
+                    loaded = json.load(f)
+                legacy_single_user = (
+                    isinstance(loaded, dict)
+                    and "users" not in loaded
+                    and isinstance(loaded.get("password_hash"), str)
+                    and bool(loaded.get("password_hash"))
+                )
+                if (
+                    not isinstance(loaded, dict)
+                    or (
+                        not legacy_single_user
+                        and (
+                            not isinstance(loaded.get("users"), dict)
+                            or not loaded.get("users")
+                        )
+                    )
+                ):
+                    raise ValueError("auth store has no usable user map")
+                self._config = loaded
                 # Normalize all stored usernames to lowercase so they match
                 # the .strip().lower() applied at login/verify time. Fixes
                 # "Invalid credentials" when auth.json was written with
@@ -133,12 +178,18 @@ class AuthManager:
                         for k, v in self._config["users"].items()
                     }
                 logger.info("Auth config loaded")
+                self._auth_store_state = "loaded"
             else:
                 self._config = {}
+                self._auth_store_state = "absent"
                 logger.info("No auth config found — first-run setup required")
         except Exception as e:
-            logger.error(f"Failed to load auth config: {e}")
+            # An existing unreadable/corrupt store is never equivalent to a
+            # clean first boot. Keep the app in an authenticated recovery-only
+            # state so a remote caller cannot claim a replacement admin.
+            logger.critical("Auth store requires local recovery: %s", e)
             self._config = {}
+            self._auth_store_state = "recovery_required"
 
     def _load_sessions(self):
         """Load persisted session tokens from disk, pruning expired ones."""
@@ -244,7 +295,11 @@ class AuthManager:
 
     @property
     def is_configured(self) -> bool:
-        return len(self.users) > 0
+        return self.recovery_required or len(self.users) > 0
+
+    @property
+    def recovery_required(self) -> bool:
+        return self._auth_store_state == "recovery_required"
 
     def policy(self) -> dict:
         """Return public auth policy constants for the frontend."""
@@ -262,7 +317,7 @@ class AuthManager:
     def setup(self, username: str, password: str) -> bool:
         """First-run admin setup. Only works if no users exist."""
         with self._setup_lock:
-            if self.is_configured:
+            if self.is_configured or self.recovery_required:
                 return False
             return self.create_user(username, password, is_admin=True)
 
@@ -383,28 +438,75 @@ class AuthManager:
         ]
 
     def get_privileges(self, username: str) -> Dict[str, Any]:
-        """Get privileges for a user. Admins get all privileges."""
+        """Get privileges for a user.
+
+        Admins receive every coarse privilege but may still opt out of granular
+        agent capabilities.  Being an administrator grants availability; it
+        must not override an explicit capability-disable choice.
+        """
         user = self.users.get(username, {})
         if user.get("is_admin"):
-            return dict(ADMIN_PRIVILEGES)
+            merged = dict(ADMIN_PRIVILEGES)
+            stored = user.get("privileges", {})
+            denied = stored.get("denied_tool_permissions", []) if isinstance(stored, dict) else []
+            merged["denied_tool_permissions"] = (
+                list(denied) if isinstance(denied, list) else []
+            )
+            return merged
         # Merge stored privileges with defaults (in case new privileges were added)
         stored = user.get("privileges", {})
-        return {**DEFAULT_PRIVILEGES, **stored}
+        merged = {**DEFAULT_PRIVILEGES, **stored}
+        # Never return the mutable default list by reference.
+        denied = merged.get("denied_tool_permissions", [])
+        merged["denied_tool_permissions"] = list(denied) if isinstance(denied, list) else []
+        return merged
 
     def set_privileges(self, username: str, privileges: Dict[str, Any]) -> bool:
-        """Update privileges for a user. Can't modify admin privileges."""
+        """Update privileges for a user.
+
+        Coarse administrator privileges remain immutable, but the granular
+        deny list is intentionally user-configurable for all roles.
+        """
         username = username.strip().lower()
         with self._config_lock:
             if username not in self.users:
                 return False
-            if self.users[username].get("is_admin"):
-                return False  # admins always have full access
+            is_admin = bool(self.users[username].get("is_admin"))
             # Only allow known privilege keys
             current = self.get_privileges(username)
             for k, v in privileges.items():
                 if k in DEFAULT_PRIVILEGES:
-                    current[k] = v
-            self._config["users"][username]["privileges"] = current
+                    if is_admin and k != "denied_tool_permissions":
+                        continue
+                    if k == "denied_tool_permissions":
+                        if not isinstance(v, list):
+                            continue
+                        try:
+                            from src.tool_authorization import all_typed_tool_permissions
+
+                            known_permissions = all_typed_tool_permissions()
+                        except Exception:
+                            # A registry import/validation failure must not let an
+                            # arbitrary string become authorization policy.
+                            continue
+                        normalized = []
+                        for item in v:
+                            scope = str(item).strip()
+                            if scope in known_permissions and scope not in normalized:
+                                normalized.append(scope)
+                        current[k] = normalized
+                    else:
+                        current[k] = v
+            if is_admin:
+                stored = self._config["users"][username].get("privileges")
+                if not isinstance(stored, dict):
+                    stored = {}
+                stored["denied_tool_permissions"] = list(
+                    current.get("denied_tool_permissions", [])
+                )
+                self._config["users"][username]["privileges"] = stored
+            else:
+                self._config["users"][username]["privileges"] = current
             self._save()
         logger.info(f"Updated privileges for '{username}': {current}")
         return True
@@ -483,6 +585,18 @@ class AuthManager:
             self._save()
         return True
 
+    def reset_password(self, username: str, new_password: str, requesting_user: str) -> bool:
+        """Admin-assisted password recovery; revokes every existing session."""
+        username = username.strip().lower()
+        requesting_user = requesting_user.strip().lower()
+        with self._config_lock:
+            if username not in self.users or not self.users.get(requesting_user, {}).get("is_admin"):
+                return False
+            self._config["users"][username]["password_hash"] = _hash_password(new_password)
+            self._save()
+        self.revoke_user_sessions(username)
+        return True
+
     # ------------------------------------------------------------------
     # TOTP two-factor authentication
     # ------------------------------------------------------------------
@@ -506,7 +620,7 @@ class AuthManager:
     def totp_get_provisioning_uri(self, username: str, secret: str) -> str:
         """Get the otpauth:// URI for QR code generation."""
         totp = pyotp.TOTP(secret)
-        return totp.provisioning_uri(name=username, issuer_name="Odysseus")
+        return totp.provisioning_uri(name=username, issuer_name="OM Automate")
 
     def totp_confirm_enable(self, username: str, code: str) -> bool:
         """Verify a TOTP code against the pending secret, then enable 2FA."""
@@ -596,7 +710,10 @@ class AuthManager:
                 return None
             with self._sessions_lock:
                 self._sessions[token] = {
+                    "id": secrets.token_hex(12),
                     "username": username,
+                    "created": time.time(),
+                    "last_seen": time.time(),
                     "expiry": time.time() + TOKEN_TTL,
                 }
         self._save_sessions()
@@ -672,6 +789,122 @@ class AuthManager:
             if revoked:
                 self._save_sessions()
         return revoked
+
+    def list_user_sessions(self, username: str, current_token: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Return safe device/session metadata without exposing bearer tokens."""
+        username = username.strip().lower()
+        now = time.time()
+        result: List[Dict[str, Any]] = []
+        changed = False
+        with self._sessions_lock:
+            for token, session in list(self._sessions.items()):
+                if (session or {}).get("expiry", 0) <= now:
+                    self._sessions.pop(token, None)
+                    changed = True
+                    continue
+                if (session or {}).get("username") != username:
+                    continue
+                if not session.get("id"):
+                    session["id"] = secrets.token_hex(12)
+                    changed = True
+                result.append({
+                    "id": session["id"],
+                    "created": session.get("created"),
+                    "last_seen": session.get("last_seen"),
+                    "expires": session.get("expiry"),
+                    "user_agent": str(session.get("user_agent") or "Unknown device")[:240],
+                    "ip": str(session.get("ip") or "Unknown")[:64],
+                    "current": secrets.compare_digest(token, current_token or ""),
+                })
+        if changed:
+            self._save_sessions()
+        return sorted(result, key=lambda item: item.get("created") or 0, reverse=True)
+
+    def revoke_user_session_id(self, username: str, session_id: str) -> bool:
+        username = username.strip().lower()
+        removed = False
+        with self._sessions_lock:
+            for token, session in list(self._sessions.items()):
+                if ((session or {}).get("username") == username
+                        and secrets.compare_digest(str(session.get("id") or ""), str(session_id or ""))):
+                    self._sessions.pop(token, None)
+                    removed = True
+                    break
+        if removed:
+            self._save_sessions()
+        return removed
+
+    def annotate_session(self, token: str, *, user_agent: str = "", ip: str = "") -> None:
+        """Attach bounded device metadata to a newly created session."""
+        with self._sessions_lock:
+            session = self._sessions.get(token)
+            if not session:
+                return
+            session["user_agent"] = str(user_agent or "")[:240]
+            session["ip"] = str(ip or "")[:64]
+        self._save_sessions()
+
+    def login_allowed(self, username: str) -> bool:
+        key = username.strip().lower()
+        until = self._login_lockouts.get(key, 0)
+        if until > time.time():
+            return False
+        if until:
+            self._login_lockouts.pop(key, None)
+            self._login_failures.pop(key, None)
+        return True
+
+    def record_login_failure(self, username: str) -> bool:
+        """Record a credential failure. Returns True when the account is locked."""
+        key = username.strip().lower()
+        now = time.time()
+        failures = [stamp for stamp in self._login_failures.get(key, []) if stamp > now - LOGIN_FAILURE_WINDOW]
+        failures.append(now)
+        self._login_failures[key] = failures
+        if len(failures) >= LOGIN_FAILURE_LIMIT:
+            self._login_lockouts[key] = now + LOGIN_LOCKOUT_SECONDS
+            return True
+        return False
+
+    def record_login_success(self, username: str) -> None:
+        key = username.strip().lower()
+        self._login_failures.pop(key, None)
+        self._login_lockouts.pop(key, None)
+
+    def append_auth_audit(self, event: str, *, actor: str = "", target: str = "", ip: str = "", details: Optional[Dict[str, Any]] = None) -> None:
+        """Append a redacted, hash-chained authentication security event."""
+        safe_details = {}
+        for key, value in (details or {}).items():
+            if any(marker in str(key).lower() for marker in ("password", "secret", "token", "code")):
+                continue
+            safe_details[str(key)[:80]] = str(value)[:500]
+        with self._auth_audit_lock:
+            previous = "0" * 64
+            try:
+                with open(self._auth_audit_path, "rb") as handle:
+                    lines = handle.readlines()
+                if lines:
+                    previous = str(json.loads(lines[-1]).get("hash") or previous)
+            except (OSError, ValueError, TypeError):
+                pass
+            record = {
+                "timestamp": time.time(), "event": str(event)[:80],
+                "actor": str(actor)[:120], "target": str(target)[:120],
+                "ip": str(ip)[:64], "details": safe_details, "previous_hash": previous,
+            }
+            canonical = json.dumps(record, sort_keys=True, separators=(",", ":"))
+            record["hash"] = hashlib.sha256((previous + canonical).encode("utf-8")).hexdigest()
+            os.makedirs(os.path.dirname(self._auth_audit_path) or ".", exist_ok=True)
+            with open(self._auth_audit_path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+    def list_auth_audit(self, limit: int = 200) -> List[Dict[str, Any]]:
+        try:
+            with open(self._auth_audit_path, encoding="utf-8") as handle:
+                rows = [json.loads(line) for line in handle if line.strip()]
+        except (OSError, ValueError):
+            return []
+        return rows[-max(1, min(int(limit), 1000)):][::-1]
 
     def status(self, token: Optional[str]) -> Dict[str, Any]:
         username = self.get_username_for_token(token)

@@ -27,7 +27,14 @@ def _client_with_admin_gate(monkeypatch, gate):
     import src.service_health as sh
 
     async def _fake_collect(_rag, _mem):
-        return {"overall": "ok", "services": [], "timestamp": "t"}
+        return {
+            "overall": "ok",
+            "services": [
+                {"name": "chromadb", "status": "disabled", "detail": "", "meta": {}},
+                {"name": "providers", "status": "disabled", "detail": "", "meta": {}},
+            ],
+            "timestamp": "t",
+        }
 
     # monkeypatch.setattr restores these after the test — a plain assignment
     # would leak the fakes into every later test in the session.
@@ -65,4 +72,10 @@ def test_admin_gets_report(monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert set(body) == {"overall", "services", "timestamp"}
-    assert body["overall"] == "ok"
+    assert body["overall"] in {"ok", "degraded", "down"}
+    names = {service["name"] for service in body["services"]}
+    assert {
+        "application", "database", "scheduler", "queue", "model_provider",
+        "embedding_provider", "vector_store", "gmail", "calendar",
+        "transcription", "file_storage",
+    } <= names

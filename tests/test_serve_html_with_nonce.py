@@ -50,3 +50,18 @@ def test_readable_template_injects_nonce(tmp_path):
     body = resp.body.decode("utf-8")
     assert "nonce-abc" in body
     assert "{{CSP_NONCE}}" not in body
+
+
+def test_readable_template_injects_validated_public_brand_json(tmp_path):
+    page = tmp_path / "brand-page.html"
+    page.write_text(
+        '<script type="application/json" nonce="{{CSP_NONCE}}">{{BRAND_CONFIG}}</script>',
+        encoding="utf-8",
+    )
+    resp = serve_html_with_nonce(_request_with_nonce("brand-nonce"), str(page))
+    body = resp.body.decode("utf-8")
+
+    assert '"product_name":"OM Automate"' in body
+    assert '"assistant_name":"OM"' in body
+    assert "{{BRAND_CONFIG}}" not in body
+    assert "</script></script>" not in body.lower()

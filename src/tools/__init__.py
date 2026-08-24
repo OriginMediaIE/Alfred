@@ -26,6 +26,15 @@ from src.tools.calendar import do_manage_calendar  # noqa: F401
 from src.tools.image import do_edit_image  # noqa: F401
 from src.tools.research import do_manage_research, do_trigger_research  # noqa: F401
 from src.tools.contacts import do_resolve_contact, do_manage_contact  # noqa: F401
+from src.tools.work import do_query_work, do_manage_work, do_delete_work  # noqa: F401
+from src.tools.google_workspace import (  # noqa: F401
+    do_query_gmail, do_manage_gmail_draft, do_send_gmail,
+    do_modify_gmail_message, do_delete_gmail, do_download_gmail_attachment,
+    do_query_google_calendar, do_create_google_calendar_hold,
+    do_create_google_calendar_event, do_update_google_calendar_event,
+    do_respond_google_calendar_invitation, do_update_google_calendar_attendees,
+    do_delete_google_calendar_event,
+)
 from src.tools.vault import (  # noqa: F401
     _load_vault_config, _run_bw,
     do_vault_search, do_vault_get, do_vault_unlock,

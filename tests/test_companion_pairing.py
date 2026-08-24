@@ -58,7 +58,6 @@ def _companion_pairing_stubs(monkeypatch):
     monkeypatch.setitem(sys.modules, "core.database", _db)
     for _name, _attrs in {
         "core.auth": {"AuthManager": MagicMock()},
-        "src.endpoint_resolver": {"build_chat_url": (lambda u: u)},
     }.items():
         if _name not in sys.modules:
             _mm = types.ModuleType(_name)
@@ -72,7 +71,7 @@ from fastapi import HTTPException  # noqa: E402
 
 import companion.pairing as P  # noqa: E402
 import companion.routes as R  # noqa: E402
-from companion.routes import mint_pairing_token, setup_companion_routes  # noqa: E402
+from companion.routes import mint_pairing_token, require_companion_scope, setup_companion_routes  # noqa: E402
 from core.middleware import require_admin  # noqa: E402
 
 
@@ -91,7 +90,7 @@ def test_mint_token_returns_raw_once_and_stores_only_a_hash(monkeypatch):
     assert _CAPTURED["token_hash"].startswith("$2")  # bcrypt
     assert _CAPTURED["token_prefix"] == raw[:8]
     assert _CAPTURED["owner"] == "alice"
-    assert _CAPTURED["scopes"] == "chat"
+    assert _CAPTURED["scopes"] == "chat,companion:read,approvals:read"
     assert _CAPTURED["is_active"] is True
 
 
@@ -160,6 +159,15 @@ def test_admin_user_passes_the_gate(monkeypatch):
     monkeypatch.setenv("AUTH_ENABLED", "true")
     # Should not raise.
     require_admin(_req("alice", is_admin=True))
+
+
+def test_companion_read_scope_is_exact_for_bearer_tokens():
+    request=SimpleNamespace(state=SimpleNamespace(api_token=True,api_token_scopes=["chat"]))
+    with pytest.raises(HTTPException) as exc:
+        require_companion_scope(request,"companion:read")
+    assert exc.value.status_code==403
+    request.state.api_token_scopes=["chat","companion:read"]
+    require_companion_scope(request,"companion:read")
 
 
 # --- CSRF: minting is POST, never GET --------------------------------------
@@ -293,3 +301,5 @@ def test_pair_post_html_escapes_pairing_values(monkeypatch):
     assert "host&lt;one&gt;&amp;" in body
     assert "ody_&lt;raw&gt;&amp;" in body
     assert "tok&lt;123&gt;" in body
+    assert "chat access to your OM Automate" in body
+    assert "chat access to your Odysseus" not in body

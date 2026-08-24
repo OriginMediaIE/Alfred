@@ -4,8 +4,10 @@ import json
 
 import src.agent_loop as agent_loop
 from src.agent_tools import ToolBlock, TOOL_TAGS  # import first to avoid circular
+from src.tool_authorization import ExecutionAuthority
 from src.tool_execution import execute_tool_block
 from src.tool_index import ALWAYS_AVAILABLE, BUILTIN_TOOL_DESCRIPTIONS
+from src.tool_registry import ToolSurface
 from src.tool_security import is_public_blocked_tool
 
 
@@ -20,14 +22,30 @@ def _plan_state(*, version=3):
     )
 
 
-def _run(content, *, state=None):
+def _authority(*, owner="alice", surface=ToolSurface.FENCE, api_token_scopes=None):
+    scopes = None if api_token_scopes is None else frozenset(api_token_scopes)
+    return ExecutionAuthority(
+        owner=owner,
+        permissions=frozenset({"conversation.plan"}),
+        surface=surface,
+        api_token_scopes=scopes,
+    )
+
+
+def _run(content, *, state=None, surface=ToolSurface.FENCE):
     async def invoke():
         if state is None:
-            return await execute_tool_block(ToolBlock("update_plan", content))
+            return await execute_tool_block(
+                ToolBlock("update_plan", content),
+                authority=_authority(surface=surface),
+            )
         from src.active_plan import bind_active_plan
 
         with bind_active_plan(state):
-            return await execute_tool_block(ToolBlock("update_plan", content))
+            return await execute_tool_block(
+                ToolBlock("update_plan", content),
+                authority=_authority(surface=surface),
+            )
 
     return asyncio.run(invoke())
 
@@ -76,10 +94,12 @@ def test_repeated_updates_advance_from_the_current_plan_version():
     async def invoke_twice():
         with bind_active_plan(state):
             first = await execute_tool_block(
-                ToolBlock("update_plan", json.dumps({"plan": "- [x] first\n- [ ] second"}))
+                ToolBlock("update_plan", json.dumps({"plan": "- [x] first\n- [ ] second"})),
+                authority=_authority(),
             )
             second = await execute_tool_block(
-                ToolBlock("update_plan", json.dumps({"plan": "- [x] first\n- [x] second"}))
+                ToolBlock("update_plan", json.dumps({"plan": "- [x] first\n- [x] second"})),
+                authority=_authority(),
             )
             return first, second
 
@@ -112,6 +132,15 @@ def _patch_agent_basics(monkeypatch):
     monkeypatch.setattr(agent_loop, "get_setting", lambda key, default=None: default)
     monkeypatch.setattr(agent_loop, "get_mcp_manager", lambda: None)
     monkeypatch.setattr(agent_loop, "estimate_tokens", lambda *args, **kwargs: 10)
+    monkeypatch.setattr(
+        agent_loop,
+        "authority_for_owner",
+        lambda owner, *, surface, auth_manager=None, api_token_scopes=None, origin=None: _authority(
+            owner=owner,
+            surface=surface,
+            api_token_scopes=api_token_scopes,
+        ),
+    )
 
 
 def test_agent_loop_emits_versioned_update_and_pins_new_revision(monkeypatch):
@@ -143,6 +172,7 @@ def test_agent_loop_emits_versioned_update_and_pins_new_revision(monkeypatch):
             approved_plan_id="plan-a",
             approved_plan_version=7,
             _is_teacher_run=True,
+            _certified_tool_calling=True,
         )
     )
     events = _agent_events(chunks)
@@ -188,6 +218,7 @@ def test_agent_loop_hides_and_blocks_update_without_active_plan(monkeypatch):
             relevant_tools={"update_plan"},
             session_id="session-a",
             _is_teacher_run=True,
+            _certified_tool_calling=True,
         )
     )
     events = _agent_events(chunks)

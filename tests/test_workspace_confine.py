@@ -16,6 +16,14 @@ import tempfile
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from core.database import Base
+from src.action_ledger import ActionLedger
+from src.tool_authorization import ExecutionAuthority
+from src.tool_registry import ToolSurface
 
 from src.tool_execution import (
     _AGENT_WORKDIR,
@@ -33,6 +41,69 @@ def _block(tool, content=""):
     return SimpleNamespace(tool_type=tool, content=content)
 
 
+def _authority(*permissions):
+    return ExecutionAuthority(
+        owner="a",
+        permissions=frozenset(permissions),
+        surface=ToolSurface.FENCE,
+    )
+
+
+@pytest.fixture
+def approval_ledger(monkeypatch):
+    import src.action_ledger as ledger_module
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    ledger = ActionLedger(session_factory=factory)
+    monkeypatch.setattr(ledger_module, "_ledger", ledger)
+    try:
+        yield ledger
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+async def _execute_with_approval(
+    ledger,
+    block,
+    *,
+    workspace,
+    request_id,
+    permissions,
+):
+    authority = _authority(*permissions)
+    description, result = await execute_tool_block(
+        block,
+        owner="a",
+        workspace=workspace,
+        request_id=request_id,
+        authority=authority,
+    )
+    if not result.get("approval_required"):
+        return description, result
+    proposal = ledger.get_action(result["approval_id"], "a")
+    grant = ledger.claim_approval(
+        proposal["id"],
+        "a",
+        expected_revision=proposal["revision"],
+        expected_hash=proposal["arguments_hash"],
+    )
+    return await execute_tool_block(
+        block,
+        owner="a",
+        workspace=workspace,
+        request_id=request_id,
+        authority=authority,
+        approval_grant=grant,
+    )
+
+
 @pytest.fixture
 def ws():
     d = tempfile.mkdtemp()
@@ -47,6 +118,10 @@ def admin(monkeypatch):
     monkeypatch.setattr(
         "src.tool_execution.owner_is_admin_or_single_user", lambda owner: True
     )
+    # Process-lifecycle behavior is tested independently. This suite needs the
+    # documented explicit override because nested CI/macOS sandboxes cannot
+    # launch sandbox-exec from inside another profile.
+    monkeypatch.setenv("OM_ALLOW_UNSANDBOXED_AGENT_EXECUTION", "1")
 
 
 # ── the resolver helper ────────────────────────────────────────────────
@@ -96,17 +171,29 @@ def test_no_binding_uses_default_roots():
 # ── end-to-end via execute_tool_block (sets + resets the binding) ───────
 
 @pytest.mark.asyncio
-async def test_read_write_edit_confined_e2e(ws, admin):
-    _, r = await execute_tool_block(_block("write_file", "note.txt\nhello"), owner="a", workspace=ws)
+async def test_read_write_edit_confined_e2e(ws, admin, approval_ledger):
+    _, r = await _execute_with_approval(
+        approval_ledger,
+        _block("write_file", "note.txt\nhello"),
+        workspace=ws,
+        request_id="workspace-write",
+        permissions=("files.write",),
+    )
     assert r["exit_code"] == 0 and os.path.isfile(os.path.join(ws, "note.txt"))
-    _, r = await execute_tool_block(_block("read_file", "note.txt"), owner="a", workspace=ws)
+    _, r = await execute_tool_block(
+        _block("read_file", "note.txt"), owner="a", workspace=ws,
+        authority=_authority("files.read"),
+    )
     assert r["exit_code"] == 0 and r["output"] == "hello"
 
     with open(os.path.join(ws, "f.txt"), "w") as f:
         f.write("foo bar")
-    _, r = await execute_tool_block(
+    _, r = await _execute_with_approval(
+        approval_ledger,
         _block("edit_file", json.dumps({"path": "f.txt", "old_string": "foo", "new_string": "baz"})),
-        owner="a", workspace=ws,
+        workspace=ws,
+        request_id="workspace-edit",
+        permissions=("files.write",),
     )
     assert r["exit_code"] == 0
     with open(os.path.join(ws, "f.txt")) as f:
@@ -117,10 +204,16 @@ async def test_read_write_edit_confined_e2e(ws, admin):
     of = os.path.join(outside, "secret.txt")
     with open(of, "w") as f:
         f.write("nope")
-    _, r = await execute_tool_block(_block("read_file", of), owner="a", workspace=ws)
+    _, r = await execute_tool_block(
+        _block("read_file", of), owner="a", workspace=ws,
+        authority=_authority("files.read"),
+    )
     assert r["exit_code"] == 1 and "outside the workspace" in r["error"]
     escape = os.path.join(outside, "_esc.txt")
-    _, r = await execute_tool_block(_block("write_file", f"{escape}\nx"), owner="a", workspace=ws)
+    _, r = await execute_tool_block(
+        _block("write_file", f"{escape}\nx"), owner="a", workspace=ws,
+        authority=_authority("files.write"),
+    )
     assert r["exit_code"] == 1 and "outside the workspace" in r["error"]
     assert not os.path.exists(escape)
 
@@ -129,14 +222,26 @@ async def test_read_write_edit_confined_e2e(ws, admin):
 async def test_grep_and_ls_confined_e2e(ws, admin):
     with open(os.path.join(ws, "doc.txt"), "w") as f:
         f.write("hello workspace\n")
-    _, r = await execute_tool_block(_block("grep", json.dumps({"pattern": "hello"})), owner="a", workspace=ws)
+    _, r = await execute_tool_block(
+        _block("grep", json.dumps({"pattern": "hello"})), owner="a", workspace=ws,
+        authority=_authority("files.read"),
+    )
     assert r["exit_code"] == 0 and "doc.txt" in r["output"]
     outside = tempfile.mkdtemp()
-    _, r = await execute_tool_block(_block("grep", json.dumps({"pattern": "x", "path": outside})), owner="a", workspace=ws)
+    _, r = await execute_tool_block(
+        _block("grep", json.dumps({"pattern": "x", "path": outside})), owner="a", workspace=ws,
+        authority=_authority("files.read"),
+    )
     assert r["exit_code"] == 1 and "outside the workspace" in r["error"]
-    _, r = await execute_tool_block(_block("ls", ""), owner="a", workspace=ws)
+    _, r = await execute_tool_block(
+        _block("ls", ""), owner="a", workspace=ws,
+        authority=_authority("files.read"),
+    )
     assert r["exit_code"] == 0 and "doc.txt" in r["output"]
-    _, r = await execute_tool_block(_block("ls", outside), owner="a", workspace=ws)
+    _, r = await execute_tool_block(
+        _block("ls", outside), owner="a", workspace=ws,
+        authority=_authority("files.read"),
+    )
     assert r["exit_code"] == 1 and "outside the workspace" in r["error"]
 
 
@@ -148,7 +253,10 @@ async def test_glob_confined_e2e(ws, admin):
     blocks reading them."""
     with open(os.path.join(ws, "found.py"), "w") as f:
         f.write("x")
-    _, r = await execute_tool_block(_block("glob", json.dumps({"pattern": "found.py"})), owner="a", workspace=ws)
+    _, r = await execute_tool_block(
+        _block("glob", json.dumps({"pattern": "found.py"})), owner="a", workspace=ws,
+        authority=_authority("files.read"),
+    )
     assert r["exit_code"] == 0 and "found.py" in r["output"]
 
     # a secret outside the workspace must not be discoverable via glob
@@ -161,7 +269,10 @@ async def test_glob_confined_e2e(ws, admin):
     # the pattern the model supplied, so the signal is the absence of a match,
     # not the absence of the path string.
     rel = os.path.relpath(secret, os.path.realpath(ws))
-    _, r = await execute_tool_block(_block("glob", json.dumps({"pattern": rel})), owner="a", workspace=ws)
+    _, r = await execute_tool_block(
+        _block("glob", json.dumps({"pattern": rel})), owner="a", workspace=ws,
+        authority=_authority("files.read"),
+    )
     # macOS spells the same temporary tree as both /tmp and /private/tmp. The
     # response may echo the caller-supplied relative pattern, but it must not
     # disclose the canonical host path as a discovered match.
@@ -171,7 +282,10 @@ async def test_glob_confined_e2e(ws, admin):
         and "No files" in r["output"]
         and canonical_secret not in r["output"]
     )
-    _, r = await execute_tool_block(_block("glob", json.dumps({"pattern": secret})), owner="a", workspace=ws)
+    _, r = await execute_tool_block(
+        _block("glob", json.dumps({"pattern": secret})), owner="a", workspace=ws,
+        authority=_authority("files.read"),
+    )
     assert r["exit_code"] == 0 and "No files" in r["output"]
 
 
@@ -194,7 +308,10 @@ async def test_glob_skips_sensitive_files_in_workspace(ws, admin):
     # A recursive wildcard returns ordinary files but none of the sensitive
     # ones. The pattern "**/*" contains no secret names, so a secret basename
     # appearing in the output is a real leak (not the echoed not-found pattern).
-    _, r = await execute_tool_block(_block("glob", json.dumps({"pattern": "**/*"})), owner="a", workspace=ws)
+    _, r = await execute_tool_block(
+        _block("glob", json.dumps({"pattern": "**/*"})), owner="a", workspace=ws,
+        authority=_authority("files.read"),
+    )
     assert r["exit_code"] == 0
     assert "keep.py" in r["output"]
     for leak in (".env", "id_rsa", "authorized_keys"):
@@ -203,14 +320,23 @@ async def test_glob_skips_sensitive_files_in_workspace(ws, admin):
     # Directly targeting a sensitive file (literal fast-path and wildcard) must
     # come back as the not-found message, never a match with the file's path.
     for pat in (".env", "**/id_rsa", "**/authorized_keys"):
-        _, r = await execute_tool_block(_block("glob", json.dumps({"pattern": pat})), owner="a", workspace=ws)
+        _, r = await execute_tool_block(
+            _block("glob", json.dumps({"pattern": pat})), owner="a", workspace=ws,
+            authority=_authority("files.read"),
+        )
         assert r["exit_code"] == 0 and "No files" in r["output"]
 
 
 @pytest.mark.asyncio
-async def test_subprocess_cwd_is_workspace_e2e(ws, admin):
+async def test_subprocess_cwd_is_workspace_e2e(ws, admin, approval_ledger):
     """python tool runs with cwd = workspace (OS-agnostic probe)."""
-    _, r = await execute_tool_block(_block("python", "import os; print(os.getcwd())"), owner="a", workspace=ws)
+    _, r = await _execute_with_approval(
+        approval_ledger,
+        _block("python", "import os; print(os.getcwd())"),
+        workspace=ws,
+        request_id="workspace-python",
+        permissions=("shell.execute",),
+    )
     assert r["exit_code"] == 0
     assert os.path.realpath(r["output"].strip()) == os.path.realpath(ws)
 
@@ -219,9 +345,15 @@ async def test_subprocess_cwd_is_workspace_e2e(ws, admin):
 
 @pytest.mark.asyncio
 async def test_get_workspace_tool(ws, admin):
-    _, r = await execute_tool_block(_block("get_workspace", ""), owner="a", workspace=ws)
-    assert r["exit_code"] == 0 and r["output"].startswith(ws) and "not sandboxed" in r["output"]
-    _, r = await execute_tool_block(_block("get_workspace", ""), owner="a")  # none active
+    _, r = await execute_tool_block(
+        _block("get_workspace", ""), owner="a", workspace=ws,
+        authority=_authority("files.read"),
+    )
+    assert r["exit_code"] == 0 and r["output"].startswith(ws)
+    _, r = await execute_tool_block(
+        _block("get_workspace", ""), owner="a",
+        authority=_authority("files.read"),
+    )  # none active
     assert r["exit_code"] == 0 and "No workspace" in r["output"]
 
 
@@ -229,7 +361,10 @@ async def test_get_workspace_tool(ws, admin):
 
 @pytest.mark.asyncio
 async def test_binding_does_not_leak(ws, admin):
-    await execute_tool_block(_block("ls", ""), owner="a", workspace=ws)
+    await execute_tool_block(
+        _block("ls", ""), owner="a", workspace=ws,
+        authority=_authority("files.read"),
+    )
     assert get_active_workspace() is None
 
 
@@ -261,8 +396,9 @@ def _sent_tool_names(monkeypatch, *, workspace):
     async def _run():
         gen = al.stream_agent_loop(
             "https://api.openai.com/v1", "gpt-test",
-            [{"role": "user", "content": "look at the local project"}],
+            [{"role": "user", "content": "inspect this workspace"}],
             max_rounds=1, relevant_tools=None, owner="admin", workspace=workspace,
+            _certified_tool_calling=True,
         )
         return [c async for c in gen]
 

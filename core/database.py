@@ -3,13 +3,14 @@ import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from sqlalchemy import event, create_engine, Column, String, Text, Boolean, DateTime, Integer, ForeignKey, JSON, Index, func, text
+from sqlalchemy import event, create_engine, Column, String, Text, Boolean, DateTime, Integer, ForeignKey, JSON, Index, UniqueConstraint, func, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.types import TypeDecorator
 from sqlalchemy.ext.declarative import declarative_base, declared_attr
 from sqlalchemy.orm import relationship, sessionmaker, backref
 
 from src.runtime_paths import get_app_root
+from src.schema_migrations import Migration, run_migrations
 
 logger = logging.getLogger(__name__)
 
@@ -358,6 +359,76 @@ class EmailAccount(TimestampMixin, Base):
     )
 
 
+class GoogleOAuthClientConfig(TimestampMixin, Base):
+    """Owner-scoped OAuth client configuration.
+
+    The client secret uses :class:`EncryptedText`; neither list/status routes
+    nor the companion tool layer ever return it.  Environment configuration is
+    supported as a deployment-level fallback and is not copied into this row.
+    """
+
+    __tablename__ = "google_oauth_client_configs"
+
+    owner = Column(String, primary_key=True)
+    client_id = Column(String, nullable=False)
+    client_secret = Column(EncryptedText, nullable=False)
+    redirect_uri = Column(String, nullable=False)
+
+
+class GoogleConnection(TimestampMixin, Base):
+    """One encrypted, owner-isolated Google account connection."""
+
+    __tablename__ = "google_connections"
+
+    id = Column(String, primary_key=True, index=True)
+    owner = Column(String, nullable=False, index=True)
+    google_subject = Column(String, nullable=False)
+    email = Column(String, nullable=False, index=True)
+    display_name = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="connected", index=True)
+    granted_scopes_json = Column(Text, nullable=False, default="[]")
+    access_token = Column(EncryptedText, nullable=True)
+    refresh_token = Column(EncryptedText, nullable=True)
+    token_expiry = Column(DateTime, nullable=True)
+    token_type = Column(String, nullable=False, default="Bearer")
+    last_successful_sync = Column(DateTime, nullable=True)
+    last_sync_error = Column(Text, nullable=True)
+    last_validated_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+
+    selected_calendars_json = Column(Text, nullable=False, default="[]")
+    gmail_label_preferences_json = Column(Text, nullable=False, default="{}")
+    default_send_behavior = Column(String, nullable=False, default="draft")
+    default_calendar = Column(String, nullable=True)
+    timezone = Column(String, nullable=False, default="UTC")
+    background_sync_enabled = Column(Boolean, nullable=False, default=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "owner",
+            "google_subject",
+            name="uq_google_connections_owner_subject",
+        ),
+        Index("ix_google_connections_owner_status", "owner", "status"),
+    )
+
+
+class GoogleOAuthAttempt(TimestampMixin, Base):
+    """Short-lived, one-time OAuth state and PKCE verifier."""
+
+    __tablename__ = "google_oauth_attempts"
+
+    # Only the SHA-256 digest is stored.  The random state travels through the
+    # browser and Google, but a database disclosure cannot mint callbacks.
+    state_hash = Column(String, primary_key=True)
+    owner = Column(String, nullable=False, index=True)
+    code_verifier = Column(EncryptedText, nullable=False)
+    requested_scopes_json = Column(Text, nullable=False)
+    redirect_uri = Column(String, nullable=False)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    consumed_at = Column(DateTime, nullable=True)
+
+
 class ModelEndpoint(TimestampMixin, Base):
     """Admin-configured model endpoints. Models are auto-discovered via /v1/models."""
     __tablename__ = "model_endpoints"
@@ -668,6 +739,108 @@ class TaskRun(Base):
 
     __table_args__ = (
         Index('ix_task_runs_task', 'task_id', 'started_at'),
+    )
+
+
+class AgentAction(TimestampMixin, Base):
+    """Durable, owner-scoped proposal/execution state for one agent action."""
+
+    __tablename__ = "agent_actions"
+
+    id = Column(String, primary_key=True, index=True)
+    owner = Column(String, nullable=False, default="", index=True)
+    session_id = Column(String, nullable=True, index=True)
+    request_id = Column(String, nullable=False, default="", index=True)
+    correlation_id = Column(String, nullable=False, index=True)
+    requested_tool = Column(String, nullable=False)
+    tool_name = Column(String, nullable=False, index=True)
+    tool_version = Column(Integer, nullable=False)
+    surface = Column(String, nullable=False)
+    origin = Column(String, nullable=False, default="agent")
+    arguments_json = Column(Text, nullable=False)
+    arguments_hash = Column(String, nullable=False, index=True)
+    execution_context_json = Column(Text, nullable=False, default="{}")
+    idempotency_key = Column(String, nullable=False)
+    risk_level = Column(Integer, nullable=False)
+    approval_reason = Column(Text, nullable=False, default="")
+    status = Column(String, nullable=False, default="pending", index=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    revision = Column(Integer, nullable=False, default=1)
+    approved_at = Column(DateTime, nullable=True)
+    approved_by = Column(String, nullable=True)
+    approval_nonce_hash = Column(String, nullable=True)
+    approval_consumed_at = Column(DateTime, nullable=True)
+    rejected_at = Column(DateTime, nullable=True)
+    rejected_by = Column(String, nullable=True)
+    decision_reason = Column(Text, nullable=True)
+    execution_started_at = Column(DateTime, nullable=True)
+    execution_finished_at = Column(DateTime, nullable=True)
+    result_json = Column(Text, nullable=True)
+    error = Column(Text, nullable=True)
+    verification_status = Column(String, nullable=True)
+    reversal_status = Column(String, nullable=True)
+    approval_rule_id = Column(String, nullable=True, index=True)
+
+    __table_args__ = (
+        Index("ux_agent_actions_idempotency", "idempotency_key", unique=True),
+        Index("ix_agent_actions_owner_status_created", "owner", "status", "created_at"),
+    )
+
+
+class AgentActionAuditEvent(Base):
+    """Append-only, hash-chained event in the agent action audit trail."""
+
+    __tablename__ = "agent_action_audit_events"
+
+    id = Column(String, primary_key=True, index=True)
+    action_id = Column(String, ForeignKey("agent_actions.id", ondelete="RESTRICT"), nullable=False, index=True)
+    owner = Column(String, nullable=False, default="", index=True)
+    sequence = Column(Integer, nullable=False)
+    event_type = Column(String, nullable=False, index=True)
+    actor = Column(String, nullable=False, default="system")
+    occurred_at = Column(DateTime, nullable=False, default=utcnow_naive, index=True)
+    correlation_id = Column(String, nullable=False, index=True)
+    payload_json = Column(Text, nullable=False, default="{}")
+    previous_hash = Column(String, nullable=False, default="")
+    event_hash = Column(String, nullable=False, unique=True)
+
+    __table_args__ = (
+        Index(
+            "ux_agent_action_audit_sequence",
+            "action_id",
+            "sequence",
+            unique=True,
+        ),
+        Index("ix_agent_action_audit_owner_time", "owner", "occurred_at"),
+    )
+
+
+class AgentApprovalRule(TimestampMixin, Base):
+    """A narrowly scoped, revocable Level-1/2 approval rule."""
+
+    __tablename__ = "agent_approval_rules"
+
+    id = Column(String, primary_key=True, index=True)
+    owner = Column(String, nullable=False, default="", index=True)
+    tool_name = Column(String, nullable=False, index=True)
+    tool_version = Column(Integer, nullable=False)
+    arguments_hash = Column(String, nullable=False)
+    scope_json = Column(Text, nullable=False, default="{}")
+    max_risk_level = Column(Integer, nullable=False, default=2)
+    enabled = Column(Boolean, nullable=False, default=True, index=True)
+    expires_at = Column(DateTime, nullable=True)
+    last_used_at = Column(DateTime, nullable=True)
+    created_by = Column(String, nullable=False, default="")
+
+    __table_args__ = (
+        Index(
+            "ux_agent_approval_rule_exact",
+            "owner",
+            "tool_name",
+            "tool_version",
+            "arguments_hash",
+            unique=True,
+        ),
     )
 
 
@@ -1812,7 +1985,7 @@ def _migrate_seed_email_account():
 # Any future migrations or schema changes that temporarily violate foreign-key
 # constraints will fail. To perform such operations, foreign_keys must be
 # temporarily disabled around the migration workflow.
-def init_db():
+def _apply_core_schema_v1(_bind):
     """
     Initialize the database by creating all tables.
     Should be called when starting the application.
@@ -1865,6 +2038,47 @@ def init_db():
     _migrate_encrypt_signatures()
     _migrate_encrypt_endpoint_keys()
     _migrate_backfill_task_folders()
+    _validate_core_schema_contract()
+
+
+def _validate_core_schema_contract():
+    """Fail startup instead of recording v1 after a swallowed column failure."""
+    from sqlalchemy import inspect
+
+    inspector = inspect(engine)
+    actual_tables = set(inspector.get_table_names())
+    missing_tables = sorted(set(Base.metadata.tables) - actual_tables)
+    missing_columns = []
+    for table_name, table in Base.metadata.tables.items():
+        if table_name not in actual_tables:
+            continue
+        actual_columns = {column["name"] for column in inspector.get_columns(table_name)}
+        for column in table.columns:
+            if column.name not in actual_columns:
+                missing_columns.append(f"{table_name}.{column.name}")
+    if missing_tables or missing_columns:
+        details = []
+        if missing_tables:
+            details.append("tables=" + ",".join(missing_tables))
+        if missing_columns:
+            details.append("columns=" + ",".join(sorted(missing_columns)))
+        raise RuntimeError("Core schema migration incomplete: " + "; ".join(details))
+
+
+def init_db():
+    """Apply the consolidated legacy baseline through a durable version record.
+
+    Historical column helpers remain idempotent for upgrades from every
+    supported pre-migration installation. Future schema changes must be added
+    as a new numbered Migration rather than appended to the v1 callback.
+    """
+    completed = run_migrations(
+        engine,
+        "core",
+        (Migration(1, "consolidated_legacy_core_schema", _apply_core_schema_v1),),
+    )
+    _validate_core_schema_contract()
+    return completed
 
 
 def _migrate_backfill_task_folders():

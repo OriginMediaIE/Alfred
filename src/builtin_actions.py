@@ -1511,7 +1511,10 @@ async def action_test_skills(owner: str, **kwargs) -> Tuple[str, bool]:
                 continue
             task = _skill_test_task(skill)
             try:
-                transcript, verdict = await _run_skill_test_once(md, task, url, model, headers, owner)
+                transcript, verdict = await _run_skill_test_once(
+                    md, task, url, model, headers, owner,
+                    auth_manager=kwargs.get("auth_manager"),
+                )
                 v = (verdict or {}).get("verdict") or "unknown"
                 tally[v] += 1
                 summary = (verdict or {}).get("summary") or ""
@@ -1613,7 +1616,10 @@ async def action_audit_skills(owner: str, **kwargs) -> Tuple[str, bool]:
             ],
             "started": _time.time(), "cancel": False,
         }
-        await _run_audit_all_job(key, sm, names, url, model, headers, teacher, owner)
+        await _run_audit_all_job(
+            key, sm, names, url, model, headers, teacher, owner,
+            auth_manager=kwargs.get("auth_manager"),
+        )
         job = _skill_audit_jobs.get(key, {})
         counts = {}
         for r in job.get("results", []):

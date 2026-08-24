@@ -43,9 +43,17 @@ EXPECTED_BUILTIN_TOOL_NAMES = frozenset(
         "cancel_download",
         "chat_with_model",
         "create_document",
+        "create_google_calendar_event",
+        "create_google_calendar_hold",
+        "create_meeting",
         "create_session",
         "delete_email",
+        "delete_gmail",
+        "delete_google_calendar_event",
+        "delete_meeting",
+        "delete_work",
         "download_attachment",
+        "download_gmail_attachment",
         "download_model",
         "draft_email",
         "draft_email_reply",
@@ -68,6 +76,7 @@ EXPECTED_BUILTIN_TOOL_NAMES = frozenset(
         "ls",
         "manage_bg_jobs",
         "manage_calendar",
+        "manage_gmail_draft",
         "manage_contact",
         "manage_documents",
         "manage_endpoints",
@@ -80,18 +89,29 @@ EXPECTED_BUILTIN_TOOL_NAMES = frozenset(
         "manage_skills",
         "manage_tasks",
         "manage_tokens",
+        "manage_work",
+        "approve_meeting_action_item",
+        "request_meeting_transcription",
+        "save_meeting_knowledge",
+        "search_meetings",
         "manage_webhooks",
         "mark_email_read",
+        "modify_gmail_message",
         "pipeline",
         "python",
+        "query_gmail",
+        "query_google_calendar",
+        "query_work",
         "read_email",
         "read_file",
         "reply_to_email",
         "resolve_contact",
+        "respond_google_calendar_invitation",
         "search_chats",
         "search_emails",
         "search_hf_models",
         "send_email",
+        "send_gmail",
         "send_to_session",
         "serve_model",
         "serve_preset",
@@ -101,6 +121,8 @@ EXPECTED_BUILTIN_TOOL_NAMES = frozenset(
         "trigger_research",
         "ui_control",
         "update_document",
+        "update_google_calendar_attendees",
+        "update_google_calendar_event",
         "update_plan",
         "vault_get",
         "vault_search",
@@ -108,30 +130,23 @@ EXPECTED_BUILTIN_TOOL_NAMES = frozenset(
         "web_fetch",
         "web_search",
         "write_file",
+        "query_knowledge",
+        "manage_knowledge",
+        "delete_knowledge",
+        "query_dashboard",
+        "query_automations",
+        "manage_automation",
+        "delete_automation",
+        "query_life",
+        "manage_life",
+        "delete_life",
     }
 )
 
-EXPECTED_CLASSIFIED_TOOL_NAMES = frozenset(
-    {
-        "bash",
-        "edit_file",
-        "get_workspace",
-        "glob",
-        "grep",
-        "ls",
-        "python",
-        "read_file",
-        "tail_serve_output",
-        "web_fetch",
-        "web_search",
-        "write_file",
-    }
-)
+EXPECTED_CLASSIFIED_TOOL_NAMES = EXPECTED_BUILTIN_TOOL_NAMES
 
 EXPECTED_PLAN_MODE_ALLOWED_TOOL_NAMES = frozenset(
     {
-        "ask_teacher",
-        "chat_with_model",
         "get_workspace",
         "glob",
         "grep",
@@ -145,6 +160,14 @@ EXPECTED_PLAN_MODE_ALLOWED_TOOL_NAMES = frozenset(
         "list_served_models",
         "list_sessions",
         "ls",
+        "query_work",
+        "query_gmail",
+        "query_google_calendar",
+        "search_meetings",
+        "query_knowledge",
+        "query_dashboard",
+        "query_automations",
+        "query_life",
         "read_email",
         "read_file",
         "resolve_contact",
@@ -208,14 +231,14 @@ def test_golden_inventory_accounts_for_every_current_builtin_capability() -> Non
 
     assert BUILTIN_TOOL_NAMES == EXPECTED_BUILTIN_TOOL_NAMES
     assert registry.names() == EXPECTED_BUILTIN_TOOL_NAMES
-    assert len(registry) == 77
+    assert len(registry) == 109
 
 
 def test_plan_mode_compatibility_allowlist_is_frozen_and_complete() -> None:
     disabled = BUILTIN_TOOL_NAMES - PLAN_MODE_ALLOWED_TOOL_NAMES
 
     assert PLAN_MODE_ALLOWED_TOOL_NAMES == EXPECTED_PLAN_MODE_ALLOWED_TOOL_NAMES
-    assert len(PLAN_MODE_ALLOWED_TOOL_NAMES) == 23
+    assert len(PLAN_MODE_ALLOWED_TOOL_NAMES) == 29
     assert PLAN_MODE_ALLOWED_TOOL_NAMES <= BUILTIN_TOOL_NAMES
     assert not PLAN_MODE_ALLOWED_TOOL_NAMES & disabled
     assert PLAN_MODE_ALLOWED_TOOL_NAMES | disabled == BUILTIN_TOOL_NAMES
@@ -230,24 +253,9 @@ def test_plan_mode_projection_pins_policy_migration_debt() -> None:
         if registry.resolve(name).migration_state is MigrationState.LEGACY_UNCLASSIFIED
     }
 
-    assert legacy_allowed == {
-        "ask_teacher",
-        "chat_with_model",
-        "list_cached_models",
-        "list_cookbook_servers",
-        "list_downloads",
-        "list_email_accounts",
-        "list_emails",
-        "list_models",
-        "list_serve_presets",
-        "list_served_models",
-        "list_sessions",
-        "read_email",
-        "resolve_contact",
-        "search_chats",
-        "search_emails",
-        "search_hf_models",
-    }
+    assert legacy_allowed == set()
+    assert "ask_teacher" not in PLAN_MODE_ALLOWED_TOOL_NAMES
+    assert "chat_with_model" not in PLAN_MODE_ALLOWED_TOOL_NAMES
     assert "tail_serve_output" not in PLAN_MODE_ALLOWED_TOOL_NAMES
     assert registry.resolve("tail_serve_output").migration_state is MigrationState.TYPED
 
@@ -440,30 +448,17 @@ def test_definition_copies_caller_owned_nested_schema() -> None:
     assert definition.input_schema["properties"]["query"]["type"] == "string"
 
 
-def test_legacy_debt_is_explicit_pinned_and_fail_closed() -> None:
+def test_phase_two_registry_has_no_legacy_policy_debt() -> None:
     registry = build_builtin_registry()
 
     assert CLASSIFIED_TOOL_NAMES == EXPECTED_CLASSIFIED_TOOL_NAMES
-    assert LEGACY_UNCLASSIFIED_TOOL_NAMES == (
-        EXPECTED_BUILTIN_TOOL_NAMES - EXPECTED_CLASSIFIED_TOOL_NAMES
-    )
-    assert registry.legacy_debt == LEGACY_UNCLASSIFIED_TOOL_NAMES
+    assert LEGACY_UNCLASSIFIED_TOOL_NAMES == frozenset()
+    assert registry.legacy_debt == frozenset()
     assert all(
-        registry.resolve(name).migration_state is MigrationState.LEGACY_UNCLASSIFIED
-        for name in LEGACY_UNCLASSIFIED_TOOL_NAMES
+        definition.migration_state is MigrationState.TYPED
+        for definition in registry
     )
-    assert all(
-        registry.resolve(name).effective_risk is RiskLevel.LEVEL_3
-        and registry.resolve(name).effective_confirmation
-        is ConfirmationPolicy.ALWAYS
-        and registry.resolve(name).permissions
-        == frozenset({"legacy.unclassified"})
-        for name in LEGACY_UNCLASSIFIED_TOOL_NAMES
-    )
-
-    registry.validate(allow_legacy=True)
-    with pytest.raises(RegistryValidationError, match="unclassified"):
-        registry.validate(allow_legacy=False)
+    registry.validate(allow_legacy=False)
 
 
 def test_tail_diagnostics_are_scoped_redacted_and_admin_gated() -> None:
@@ -477,6 +472,75 @@ def test_tail_diagnostics_are_scoped_redacted_and_admin_gated() -> None:
     from src.tool_security import is_public_blocked_tool
 
     assert is_public_blocked_tool("tail_serve_output") is True
+
+
+def test_email_operations_have_operation_level_risk_and_scopes() -> None:
+    registry = build_builtin_registry()
+
+    expectations = {
+        "draft_email": (RiskLevel.LEVEL_1, "email.draft", True),
+        "draft_email_reply": (RiskLevel.LEVEL_1, "email.draft", True),
+        "ai_draft_email_reply": (RiskLevel.LEVEL_2, "email.draft", False),
+        "send_email": (RiskLevel.LEVEL_2, "email.send", False),
+        "reply_to_email": (RiskLevel.LEVEL_2, "email.send", False),
+        "archive_email": (RiskLevel.LEVEL_1, "email.archive", True),
+        "mark_email_read": (RiskLevel.LEVEL_1, "email.modify", True),
+        "download_attachment": (
+            RiskLevel.LEVEL_1,
+            "email.attachments.download",
+            True,
+        ),
+        "delete_email": (RiskLevel.LEVEL_3, "email.delete", False),
+        "bulk_email": (RiskLevel.LEVEL_3, "email.bulk", False),
+    }
+    for name, (risk, permission, reversible) in expectations.items():
+        definition = registry.resolve(name)
+        assert definition.migration_state is MigrationState.TYPED
+        assert definition.risk is risk
+        assert definition.permissions == frozenset({permission})
+        assert definition.reversible is reversible
+        assert definition.verification is VerificationMode.READ_BACK
+
+    assert registry.resolve("draft_email").confirmation is ConfirmationPolicy.TRUSTED_ONLY
+    assert registry.resolve("send_email").confirmation is ConfirmationPolicy.REQUIRED
+    assert registry.resolve("delete_email").confirmation is ConfirmationPolicy.ALWAYS
+    assert registry.resolve("bulk_email").confirmation is ConfirmationPolicy.ALWAYS
+
+
+def test_personal_work_tools_are_split_by_operation_risk() -> None:
+    registry = build_builtin_registry()
+
+    query = registry.resolve("query_work")
+    manage = registry.resolve("manage_work")
+    delete = registry.resolve("delete_work")
+
+    assert query.risk is RiskLevel.LEVEL_0
+    assert query.permissions == frozenset({"tasks.read"})
+    assert query.idempotency is IdempotencyMode.READ_ONLY
+    assert manage.risk is RiskLevel.LEVEL_1
+    assert manage.permissions == frozenset({"tasks.write"})
+    assert manage.reversible is True
+    assert manage.confirmation is ConfirmationPolicy.TRUSTED_ONLY
+    assert delete.risk is RiskLevel.LEVEL_3
+    assert delete.permissions == frozenset({"tasks.delete"})
+    assert delete.confirmation is ConfirmationPolicy.ALWAYS
+
+
+def test_google_workspace_tools_are_split_by_external_effect() -> None:
+    registry = build_builtin_registry()
+
+    assert registry.resolve("query_gmail").risk is RiskLevel.LEVEL_0
+    assert registry.resolve("query_google_calendar").risk is RiskLevel.LEVEL_0
+    assert registry.resolve("manage_gmail_draft").risk is RiskLevel.LEVEL_1
+    assert registry.resolve("create_google_calendar_hold").risk is RiskLevel.LEVEL_1
+    assert registry.resolve("send_gmail").risk is RiskLevel.LEVEL_2
+    assert registry.resolve("create_google_calendar_event").risk is RiskLevel.LEVEL_2
+    assert registry.resolve("update_google_calendar_event").risk is RiskLevel.LEVEL_2
+    assert registry.resolve("delete_gmail").risk is RiskLevel.LEVEL_3
+    assert registry.resolve("delete_google_calendar_event").risk is RiskLevel.LEVEL_3
+    assert registry.resolve("delete_google_calendar_event").permissions == frozenset(
+        {"calendar.delete"}
+    )
 
 
 def test_new_legacy_debt_cannot_sneak_outside_the_frozen_allowlist() -> None:

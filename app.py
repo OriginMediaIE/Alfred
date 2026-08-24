@@ -47,6 +47,20 @@ from dotenv import load_dotenv
 # utf-8-sig reads plain UTF-8 (no BOM) identically, so this is safe everywhere.
 load_dotenv(encoding="utf-8-sig")
 
+from src.runtime_security import apply_private_umask, secure_runtime_storage
+
+apply_private_umask()
+
+# A restore is staged and explicitly confirmed through the admin API, then
+# applied here before any SQLite engine or credential store is opened.
+from src.constants import DATA_DIR as _RESTORE_DATA_DIR
+from src.restore_bootstrap import apply_pending_restore as _apply_pending_restore
+_restore_result = _apply_pending_restore(_RESTORE_DATA_DIR)
+secure_runtime_storage(
+    _RESTORE_DATA_DIR,
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"),
+)
+
 import asyncio
 import logging
 import secrets
@@ -67,7 +81,7 @@ from core.constants import (
     REQUEST_TIMEOUT, OPENAI_API_KEY, AUTH_FILE,
 )
 from core.database import SessionLocal, ApiToken
-from core.middleware import SecurityHeadersMiddleware, is_cors_preflight
+from core.middleware import CookieCSRFMiddleware, SecurityHeadersMiddleware, is_cors_preflight
 from core.auth import AuthManager, normalize_known_username
 from core.exceptions import (
     SessionNotFoundError, InvalidFileUploadError,
@@ -77,6 +91,7 @@ from core.exceptions import (
 import bcrypt as _bcrypt
 
 from src.app_helpers import abs_join, serve_html_with_nonce
+from src.branding import get_brand_config
 from src.generated_images import GENERATED_IMAGE_HEADERS, resolve_generated_image_path
 from starlette.responses import RedirectResponse
 
@@ -118,11 +133,13 @@ logger = logging.getLogger(__name__)
 # Lifespan is defined below (after all helpers it references are in scope)
 # and passed to FastAPI so we can use the modern context-manager lifecycle
 # instead of the deprecated @app.on_event("startup"/"shutdown") decorators.
+_brand = get_brand_config()
 app = FastAPI(
-    title="AI Chat Application",
-    description="Comprehensive AI chat with memory, research, and multi-modal capabilities",
+    title=_brand.product_name,
+    description=_brand.positioning,
     version="1.0.0",
 )
+app.state.lifecycle_phase = "initializing"
 
 # ========= CORS =========
 CORS_ALLOW_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
@@ -180,6 +197,7 @@ _TIMEOUT_EXEMPT_PREFIXES = (
     "/api/cookbook/setup",  # remote pacman/apt installs
     "/api/upload",          # large files
     "/api/image",           # diffusion proxies (inpaint/harmonize/upscale/etc.) — own 120s httpx timeout
+    "/api/approvals",       # approved tools enforce their registry-owned timeout
     "/api/memory/audit",    # retains own 120s LLM inactivity timeout
 )
 
@@ -242,6 +260,7 @@ class _SlowRequestLogMiddleware(_BaseHTTPMiddleware):
 app.add_middleware(_RequestTimeoutMiddleware)
 app.add_middleware(_InteractiveActivityMiddleware)
 app.add_middleware(_SlowRequestLogMiddleware)
+app.add_middleware(CookieCSRFMiddleware)
 
 # ========= AUTH =========
 from routes.auth_routes import setup_auth_routes, SESSION_COOKIE
@@ -264,6 +283,7 @@ if AUTH_ENABLED:
         "/api/auth/settings",
         "/api/auth/integrations/presets",
         "/api/health",
+        "/api/ready",
         "/api/version",
         "/login",
     }
@@ -666,7 +686,7 @@ from routes.memory.memory_routes import setup_memory_routes
 memory_router = setup_memory_routes(memory_manager, session_manager, memory_vector=memory_vector)
 app.include_router(memory_router)
 from routes.skills_routes import setup_skills_routes
-app.include_router(setup_skills_routes(skills_manager))
+app.include_router(setup_skills_routes(skills_manager, auth_manager=auth_manager))
 
 # Chat
 from routes.chat_routes import setup_chat_routes
@@ -677,6 +697,30 @@ app.include_router(setup_chat_routes(
     webhook_manager=webhook_manager,
     skills_manager=skills_manager,
 ))
+
+# Durable agent approvals and immutable action history.
+from routes.action_routes import setup_action_routes
+app.include_router(setup_action_routes())
+
+from routes.work_routes import setup_work_routes
+app.include_router(setup_work_routes())
+from routes.knowledge_routes import setup_knowledge_routes
+app.include_router(setup_knowledge_routes())
+from routes.life_routes import setup_life_routes
+app.include_router(setup_life_routes())
+from routes.privacy_routes import setup_privacy_routes
+from services.privacy_retention import PrivacyRetentionService
+privacy_retention_service = PrivacyRetentionService(session_manager=session_manager, upload_handler=upload_handler)
+app.include_router(setup_privacy_routes(retention_service=privacy_retention_service))
+from routes.dashboard_routes import setup_dashboard_routes
+app.include_router(setup_dashboard_routes())
+from services.automation_service import get_automation_service
+from routes.automation_routes import setup_automation_routes, setup_automation_webhook_routes
+automation_service = get_automation_service()
+app.include_router(setup_automation_routes(automation_service))
+app.include_router(setup_automation_webhook_routes(automation_service))
+from routes.integration_registry_routes import setup_integration_registry_routes
+app.include_router(setup_integration_registry_routes())
 
 # Research (background deep-research tasks)
 from routes.research.research_routes import setup_research_routes
@@ -752,7 +796,8 @@ app.include_router(setup_editor_draft_routes())
 
 # Scheduled tasks + event bus
 from src.task_scheduler import TaskScheduler
-task_scheduler = TaskScheduler(session_manager)
+task_scheduler = TaskScheduler(session_manager, auth_manager=auth_manager)
+app.state.task_scheduler = task_scheduler
 from src.event_bus import set_task_scheduler
 set_task_scheduler(task_scheduler)
 from routes.task_routes import setup_task_routes
@@ -792,6 +837,8 @@ app.include_router(setup_prefs_routes())
 # Backup (export/import user data)
 from routes.backup_routes import setup_backup_routes
 app.include_router(setup_backup_routes(memory_manager, preset_manager, skills_manager))
+from routes.system_backup_routes import setup_system_backup_routes
+app.include_router(setup_system_backup_routes())
 
 from routes.font_routes import setup_font_routes
 app.include_router(setup_font_routes())
@@ -832,6 +879,19 @@ app.include_router(setup_note_routes(task_scheduler))
 from routes.email_routes import setup_email_routes
 email_router = setup_email_routes()
 app.include_router(email_router)
+
+# Unified Google OAuth connection manager (Gmail + Calendar capabilities).
+from routes.google_routes import setup_google_routes
+app.include_router(setup_google_routes())
+
+from routes.google_workspace_routes import setup_google_workspace_routes
+app.include_router(setup_google_workspace_routes())
+
+# Local-first meeting records, uploads, transcription jobs, and evidence review.
+from services.meeting_service import get_meeting_service
+from routes.meeting_routes import setup_meeting_routes
+meeting_service = get_meeting_service()
+app.include_router(setup_meeting_routes(meeting_service))
 
 # Codex integration — HTTP surface for the Codex plugin/MCP bridge. Reuses
 # api_token scopes (todos:read|write, email:read|draft|send) so external
@@ -925,11 +985,19 @@ async def get_version():
 
 @app.get("/api/health")
 async def health_check() -> Dict[str, str]:
-    return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
+    return {
+        "status": "live",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
 
 @app.post("/api/client-perf")
 async def client_perf(request: Request):
     """Low-volume frontend timing reports for stalls that happen before SSE logs."""
+    from services.privacy_service import get_privacy_service
+    from src.auth_helpers import effective_user
+    owner = effective_user(request)
+    if not get_privacy_service().get(owner).get("telemetry_enabled", False):
+        return {"ok": True, "recorded": False}
     try:
         data = await request.json()
     except Exception:
@@ -953,17 +1021,17 @@ async def client_perf(request: Request):
         )
     except Exception:
         logging.getLogger("app.client_perf").debug("client_perf log failed", exc_info=True)
-    return {"ok": True}
+    return {"ok": True, "recorded": True}
 
 @app.get("/api/ready")
 async def readiness_check() -> JSONResponse:
-    """Readiness / integrity self-check — DB, data dir, local-first storage.
-
-    Unlike /api/health (liveness), this returns 503 unless every critical
-    subsystem is whole, so an orchestrator can gate traffic on real readiness.
-    """
+    """Return secret-free core readiness, including explicit degraded state."""
     from src.readiness import check_readiness
-    result = check_readiness()
+    result = check_readiness(
+        app.state,
+        rag_manager=rag_manager,
+        memory_vector=memory_vector,
+    )
     return JSONResponse(status_code=200 if result.get("ready") else 503, content=result)
 
 @app.get("/api/runtime")
@@ -991,18 +1059,23 @@ async def runtime_info() -> Dict[str, object]:
 @asynccontextmanager
 async def _lifespan(app):
     """Modern lifespan context manager replacing deprecated @app.on_event."""
-    # ── STARTUP ──
-    await _startup_event()
-    yield
-    # ── SHUTDOWN ──
-    await _shutdown_event()
+    try:
+        await _startup_event()
+        yield
+    finally:
+        await _shutdown_event()
 
 app.router.lifespan_context = _lifespan
 
 
 async def _startup_event():
     global upload_cleanup_task
+    app.state.lifecycle_phase = "starting"
     logger.info("Application starting up...")
+    secure_runtime_storage(
+        DATA_DIR,
+        os.path.join(BASE_DIR, ".env"),
+    )
     webhook_manager.set_loop(asyncio.get_running_loop())
     # Wipe any leftover incognito sessions from previous process — they're
     # ephemeral by design and must not survive a restart.
@@ -1023,7 +1096,7 @@ async def _startup_event():
         logger.debug(f"Incognito purge skipped: {e}")
     # Strong refs to fire-and-forget startup tasks. Without this, Python may
     # GC tasks created with `asyncio.create_task(...)` before they finish.
-    _startup_tasks: list[asyncio.Task] = getattr(app.state, "_startup_tasks", [])
+    _startup_tasks: list[asyncio.Task] = []
     app.state._startup_tasks = _startup_tasks
     if upload_cleanup_func:
         upload_cleanup_task = asyncio.create_task(upload_cleanup_func())
@@ -1031,9 +1104,33 @@ async def _startup_event():
     # job (#!bg) finishes — re-invokes the turn with the job output.
     try:
         from src.bg_monitor import start_bg_monitor
-        _startup_tasks.append(start_bg_monitor())
+        _startup_tasks.append(start_bg_monitor(auth_manager=auth_manager))
     except Exception as _e:
         logger.warning("Failed to start background-job monitor: %s", _e)
+    try:
+        from services.meeting_worker import start_meeting_worker
+        _meeting_worker, _meeting_worker_task = start_meeting_worker(meeting_service)
+        app.state.meeting_worker = _meeting_worker
+        app.state.meeting_worker_task = _meeting_worker_task
+        _startup_tasks.append(_meeting_worker_task)
+    except Exception as _e:
+        logger.warning("Failed to start meeting worker: %s", _e)
+    try:
+        from services.automation_worker import start_automation_worker
+        _automation_worker, _automation_worker_task = start_automation_worker(automation_service)
+        app.state.automation_worker = _automation_worker
+        app.state.automation_worker_task = _automation_worker_task
+        _startup_tasks.append(_automation_worker_task)
+    except Exception as _e:
+        logger.warning("Failed to start structured automation worker: %s", _e)
+    try:
+        from services.privacy_retention import start_privacy_retention_worker
+        _privacy_worker, _privacy_worker_task = start_privacy_retention_worker(privacy_retention_service)
+        app.state.privacy_retention_worker = _privacy_worker
+        app.state.privacy_retention_worker_task = _privacy_worker_task
+        _startup_tasks.append(_privacy_worker_task)
+    except Exception as _e:
+        logger.warning("Failed to start privacy retention worker: %s", _e)
     # MCP servers can be slow or blocked by local tooling. Connect them after
     # the web server is accepting traffic instead of delaying the whole UI.
     async def _startup_mcp_connections():
@@ -1224,7 +1321,12 @@ async def _startup_event():
                     continue
                 batch = int(get_setting("skill_audit_batch", 8) or 8)
                 from routes.skills_routes import run_scheduled_skill_audit
-                await run_scheduled_skill_audit(skills_manager, owner=None, max_skills=batch)
+                await run_scheduled_skill_audit(
+                    skills_manager,
+                    owner=None,
+                    max_skills=batch,
+                    auth_manager=auth_manager,
+                )
             except Exception as e:
                 logger.warning(f"Nightly skill audit failed: {e}")
 
@@ -1239,9 +1341,11 @@ async def _startup_event():
     from src.cookbook_serve_lifecycle import cookbook_serve_lifecycle_loop
     _startup_tasks.append(asyncio.create_task(cookbook_serve_lifecycle_loop()))
 
+    app.state.lifecycle_phase = "running"
     logger.info("Application startup complete")
 
 async def _shutdown_event():
+    app.state.lifecycle_phase = "stopping"
     logger.info("Application shutting down...")
     if upload_cleanup_task:
         upload_cleanup_task.cancel()
@@ -1249,11 +1353,55 @@ async def _shutdown_event():
             await upload_cleanup_task
         except asyncio.CancelledError:
             pass
+    privacy_worker = getattr(app.state, "privacy_retention_worker", None)
+    privacy_worker_task = getattr(app.state, "privacy_retention_worker_task", None)
+    if privacy_worker is not None:
+        privacy_worker.stop()
+    if privacy_worker_task is not None and not privacy_worker_task.done():
+        try:
+            await asyncio.wait_for(privacy_worker_task, timeout=10)
+        except asyncio.TimeoutError:
+            privacy_worker_task.cancel()
+            await asyncio.gather(privacy_worker_task, return_exceptions=True)
+        except asyncio.CancelledError:
+            pass
+
+    automation_worker = getattr(app.state, "automation_worker", None)
+    automation_worker_task = getattr(app.state, "automation_worker_task", None)
+    if automation_worker is not None:
+        automation_worker.stop()
+    if automation_worker_task is not None and not automation_worker_task.done():
+        try:
+            await asyncio.wait_for(automation_worker_task, timeout=10)
+        except asyncio.TimeoutError:
+            automation_worker_task.cancel()
+            await asyncio.gather(automation_worker_task, return_exceptions=True)
+        except asyncio.CancelledError:
+            pass
+    meeting_worker = getattr(app.state, "meeting_worker", None)
+    meeting_worker_task = getattr(app.state, "meeting_worker_task", None)
+    if meeting_worker is not None:
+        meeting_worker.stop()
+    if meeting_worker_task is not None and not meeting_worker_task.done():
+        try:
+            await asyncio.wait_for(meeting_worker_task, timeout=10)
+        except asyncio.TimeoutError:
+            meeting_worker_task.cancel()
+            await asyncio.gather(meeting_worker_task, return_exceptions=True)
+        except asyncio.CancelledError:
+            pass
     # Stop task scheduler (no-op if it never started under the gate)
     try:
         await task_scheduler.stop()
     except Exception:
         pass
+    # Cancel and reap every remaining app-owned loop or startup connector.
+    # This includes the MCP connector, background monitor, keepalive, owner
+    # sweep, skill audit, and Cookbook lifecycle tasks.
+    from src.app_lifecycle import cancel_and_reap_tasks
+
+    await cancel_and_reap_tasks(getattr(app.state, "_startup_tasks", []))
+    app.state._startup_tasks = []
     # Close webhook manager
     try:
         await webhook_manager.close()
@@ -1264,6 +1412,7 @@ async def _shutdown_event():
         await mcp_manager.disconnect_all()
     except Exception as e:
         logger.warning(f"MCP shutdown error: {e}")
+    app.state.lifecycle_phase = "stopped"
     logger.info("Application shutdown complete")
 
 

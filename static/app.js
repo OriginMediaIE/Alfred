@@ -1,5 +1,5 @@
 // ============================================
-// Odysseus UI — Main Application Orchestrator
+// OM Automate UI — Main Application Orchestrator
 // ES6 module — entry point, no exports (wires all modules together)
 // ============================================
 import Storage from './js/storage.js';
@@ -25,6 +25,7 @@ import galleryModule from './js/gallery.js';
 import tasksModule from './js/tasks.js?v=20260630tasksactivity';
 import calendarModule from './js/calendar.js';
 import notesModule from './js/notes.js';
+import approvalCentreModule from './js/approvalCentre.js';
 import adminModule from './js/admin.js';
 import settingsModule from './js/settings.js';
 // Eagerly bind unified minimize/restore behavior across all tool modals.
@@ -38,6 +39,7 @@ import themeModule from './js/theme.js';
 // _envState objects), which broke server selection. Keep all cookbook imports
 // unversioned so this can't recur.
 import cookbookModule from './js/cookbook.js';
+import { initLocalLlmOnboarding } from './js/localLlmOnboarding.js';
 import groupModule from './js/group.js';
 import * as researchPanelModule from './js/research/panel.js?v=20260630researchthumb';
 import ttsModule from './js/tts-ai.js';
@@ -45,8 +47,10 @@ import spinnerModule from './js/spinner.js';
 import { initKeyboardShortcuts } from './js/keyboard-shortcuts.js';
 import { initSidebarLayout, syncRailSide } from './js/sidebar-layout.js';
 import { initSectionCollapse, initSectionDrag } from './js/section-management.js';
+import { getBrand } from './js/brand.js';
 
 const API_BASE = window.location.origin;
+const BRAND = getBrand();
 window.themeModule = themeModule;
 window.sessionModule = sessionModule;
 window.uiModule = uiModule;
@@ -161,6 +165,7 @@ function initRailHoverLabels() {
     'rail-delete-session': 'Delete',
     'rail-chats': 'Chat',
     'rail-documents': 'Docs',
+    'rail-approvals': 'Approvals',
     'rail-calendar': 'Calendar',
     'rail-compare': 'Compare',
     'rail-cookbook': 'Cookbook',
@@ -529,7 +534,7 @@ function initializeEventListeners() {
       e.stopPropagation();
       exportMenu.classList.remove('open');
       const meta = sessionModule.getSessions().find(s => s.id === sessionModule.getCurrentSessionId());
-      const sessionName = meta ? meta.name : 'Odysseus Chat';
+      const sessionName = meta ? meta.name : `${BRAND.assistant_name} Chat`;
       const originalTitle = document.title;
       document.title = sessionName;
       const chatHistory = document.getElementById('chat-history');
@@ -985,6 +990,16 @@ function initializeEventListeners() {
   }
 
   // ── Tools section click handlers ──
+  const toolApprovalsBtn = el('tool-approvals-btn');
+  if (toolApprovalsBtn) {
+    toolApprovalsBtn.addEventListener('click', () => approvalCentreModule.toggle());
+    toolApprovalsBtn.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      toolApprovalsBtn.click();
+    });
+  }
+
   const toolCompareBtn = el('tool-compare-btn');
   if (toolCompareBtn) {
     toolCompareBtn.addEventListener('click', () => {
@@ -1163,6 +1178,7 @@ function initializeEventListeners() {
     }
   }
   const _routeOpen = {
+    '/approvals': () => document.getElementById('tool-approvals-btn')?.click(),
     '/notes':    () => {
       if (!notesModule) return;
       _collapseSidebarToRail();
@@ -1746,6 +1762,18 @@ function initializeEventListeners() {
     uiModule.showToast(`${label} ${active ? 'on' : 'off'}`, 1800);
   }
 
+  function syncToolToggleVisual(btn, stateKey, active) {
+    if (!btn) return;
+    btn.setAttribute('aria-pressed', String(active));
+    if (stateKey !== 'web') return;
+    const state = active ? 'on' : 'off';
+    btn.dataset.state = state;
+    btn.title = `Web search ${state}`;
+    btn.setAttribute('aria-label', `Web search ${state}`);
+    const label = btn.querySelector('.web-access-state');
+    if (label) label.textContent = active ? 'ON' : 'OFF';
+  }
+
   function applyModeToToggles(mode) {
     MODE_TOOLS.forEach(({ btnId, checkboxId, stateKey }) => {
       const btn = el(btnId);
@@ -1760,6 +1788,7 @@ function initializeEventListeners() {
       if (btn.style.display === 'none') return;
       const on = loadToolPref(stateKey, mode);
       btn.classList.toggle('active', on);
+      syncToolToggleVisual(btn, stateKey, on);
       if (checkboxId) { const chk = el(checkboxId); if (chk) chk.checked = on; }
     });
   }
@@ -1847,13 +1876,13 @@ function initializeEventListeners() {
     const chk = el(checkboxId);
     if (chk) chk.checked = saved;
     btn.classList.toggle('active', saved);
-    btn.setAttribute('aria-pressed', String(saved));
+    syncToolToggleVisual(btn, stateKey, saved);
     btn.addEventListener('click', () => {
       const curMode = (loadToggleState().mode) || 'chat';
       const chk = el(checkboxId);
       chk.checked = !chk.checked;
       btn.classList.toggle('active', chk.checked);
-      btn.setAttribute('aria-pressed', String(chk.checked));
+      syncToolToggleVisual(btn, stateKey, chk.checked);
       saveToolPref(stateKey, curMode, chk.checked);
       showToolToggleToast(stateKey, chk.checked);
       if (chk.checked) _showToolSplash(stateKey);
@@ -2315,7 +2344,7 @@ function initializeEventListeners() {
       // Keep a prompt inside the composer even when the picker crowds the row.
       // A blank placeholder makes the mobile/compact empty state feel broken.
       if (textarea) {
-        textarea.setAttribute('placeholder', w < PLACEHOLDER_COMPACT_WIDTH ? 'Message...' : 'Message Odysseus...');
+        textarea.setAttribute('placeholder', w < PLACEHOLDER_COMPACT_WIDTH ? 'Message…' : BRAND.copy.message_placeholder);
       }
       // Hide entire bottom toolbar (tools, mode toggle) — only send button remains
       if (inputBottom) {
@@ -2611,6 +2640,7 @@ function initializeEventListeners() {
     'tools-section':       '#tools-section',
     // Per-tool visibility — fine-grained control over which entries show
     // inside the Tools section in the sidebar.
+    'tool-approvals':      '#tool-approvals-btn',
     'tool-calendar':       '#tool-calendar-btn',
     'tool-compare':        '#tool-compare-btn',
     'tool-cookbook':       '#tool-cookbook-btn',
@@ -3587,6 +3617,7 @@ function startOdysseusApp() {
   // Set CSS variables
   document.documentElement.style.setProperty('--line-height', '20px');
   initRailHoverLabels();
+  approvalCentreModule.init();
 
   // Smooth keyboard open/close on mobile — keep chat scrolled to bottom
   if (window.visualViewport && 'ontouchstart' in window) {
@@ -3622,6 +3653,7 @@ function startOdysseusApp() {
   searchModule.init(API_BASE);
   chatModule.init(API_BASE);
   chatModule.initListeners();
+  initLocalLlmOnboarding();
   groupModule.init(API_BASE);
   // Initialize compare module
   if (compareModule) {
@@ -3652,6 +3684,7 @@ function startOdysseusApp() {
 
   // Rail tool buttons — delegate to sidebar tool buttons
   const _railToolMap = {
+    'rail-approvals': 'tool-approvals-btn',
     'rail-compare':   'tool-compare-btn',
     'rail-research':  'tool-research-btn',
     'rail-cookbook':   'tool-cookbook-btn',

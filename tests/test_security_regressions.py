@@ -114,6 +114,67 @@ def test_secret_storage_key_created_with_safe_mode(tmp_path, monkeypatch):
     assert mode == 0o600, f"expected 0o600, got 0o{mode:o}"
 
 
+def test_secret_storage_rotation_keeps_old_ciphertext_readable(
+    tmp_path,
+    monkeypatch,
+):
+    ss = _import_secret_storage(tmp_path, monkeypatch)
+    before = ss.encrypt("refresh-token-before-rotation")
+    old_fingerprint = ss.master_key_status()["current_fingerprint"]
+
+    rotation = ss.rotate_master_key(keep_previous=2)
+    after = ss.encrypt("access-token-after-rotation")
+
+    assert rotation["previous_fingerprint"] == old_fingerprint
+    assert rotation["current_fingerprint"] != old_fingerprint
+    assert ss.decrypt(before) == "refresh-token-before-rotation"
+    assert ss.decrypt(after) == "access-token-after-rotation"
+    assert before != after
+    assert ss.master_key_status()["previous_key_count"] == 1
+
+
+def test_secret_storage_rewrap_moves_ciphertext_to_current_key(
+    tmp_path,
+    monkeypatch,
+):
+    ss = _import_secret_storage(tmp_path, monkeypatch)
+    old_ciphertext = ss.encrypt("credential")
+    ss.rotate_master_key(keep_previous=1)
+
+    current_ciphertext = ss.rewrap(old_ciphertext)
+    (tmp_path / ".app_key.previous").unlink()
+    monkeypatch.setattr(ss, "_fernet", None)
+
+    assert ss.decrypt(current_ciphertext) == "credential"
+    assert ss.decrypt(old_ciphertext) == ""
+
+
+def test_secret_storage_rotation_history_is_bounded(tmp_path, monkeypatch):
+    ss = _import_secret_storage(tmp_path, monkeypatch)
+    ss.encrypt("initialize")
+
+    for _ in range(4):
+        ss.rotate_master_key(keep_previous=2)
+
+    assert ss.master_key_status()["previous_key_count"] == 2
+    previous_path = tmp_path / ".app_key.previous"
+    previous = json.loads(previous_path.read_text(encoding="utf-8"))
+    assert len(previous) == 2
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX mode bits are unavailable on Windows.",
+)
+def test_secret_storage_rotation_keyring_is_owner_only(tmp_path, monkeypatch):
+    ss = _import_secret_storage(tmp_path, monkeypatch)
+    ss.encrypt("initialize")
+    ss.rotate_master_key()
+
+    assert ((tmp_path / ".app_key").stat().st_mode & 0o777) == 0o600
+    assert ((tmp_path / ".app_key.previous").stat().st_mode & 0o777) == 0o600
+
+
 # ── secure-by-default deployment + integration storage ─────────
 
 def test_docker_compose_binds_web_ui_to_loopback_by_default():

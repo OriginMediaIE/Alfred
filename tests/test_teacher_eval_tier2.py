@@ -185,7 +185,10 @@ async def test_run_teacher_inline_triggers_tier2_escalation(monkeypatch):
     monkeypatch.setattr("src.teacher_escalation.evaluate_turn_llm", fake_evaluate_turn_llm)
 
     # Mock stream_agent_loop recursively called by run_teacher_inline
+    recursive_kwargs = {}
+
     async def fake_stream_agent_loop(*args, **kwargs):
+        recursive_kwargs.update(kwargs)
         yield "data: {\"type\": \"tool_output\", \"tool\": \"bash\"}\n\n"
         yield "data: {\"type\": \"text\", \"delta\": \"Teacher reply\"}\n\n"
         yield "data: [DONE]\n\n"
@@ -196,25 +199,53 @@ async def test_run_teacher_inline_triggers_tier2_escalation(monkeypatch):
         return '```json\n{"action": "add", "name": "test-skill"}\n```'
     monkeypatch.setattr("src.teacher_escalation._call_teacher", fake_call_teacher)
 
-    # Mock do_manage_skills
-    async def fake_do_manage_skills(skill_json, owner=None):
-        return {"success": True}
-    monkeypatch.setattr("src.tool_implementations.do_manage_skills", fake_do_manage_skills)
+    proposed = []
+
+    def fake_propose_teacher_skill(skill, owner=None):
+        proposed.append((skill, owner))
+        return {
+            "id": "approval-1",
+            "status": "pending",
+            "expires_at": "2026-08-21T12:15:00Z",
+            "revision": 1,
+            "tool_name": "manage_skills",
+        }
+
+    monkeypatch.setattr(
+        "src.teacher_escalation._propose_teacher_skill",
+        fake_propose_teacher_skill,
+    )
 
     events = []
+    auth_manager = object()
     async for evt in teacher_escalation.run_teacher_inline(
         student_endpoint_url="http://student.local/v1",
         student_messages=[{"role": "user", "content": "test request"}],
         student_tool_events=[],
         student_reply="student reply",
         owner="alice",
+        session_id="session-a",
+        disabled_tools={"bash"},
+        tool_policy="policy-sentinel",
+        workspace="/workspace",
+        api_token_scopes={"chat", "email:read"},
+        max_tool_calls=3,
+        auth_manager=auth_manager,
     ):
         events.append(evt)
 
     # Make sure teacher takeover was announced and executed
     assert any("teacher_takeover" in evt for evt in events)
     assert any("tool_output" in evt for evt in events)
-    assert any("skill_saved" in evt for evt in events)
+    assert any("approval_required" in evt for evt in events)
+    assert proposed and proposed[0][1] == "alice"
+    assert recursive_kwargs["session_id"] == "session-a"
+    assert recursive_kwargs["disabled_tools"] == {"bash"}
+    assert recursive_kwargs["tool_policy"] == "policy-sentinel"
+    assert recursive_kwargs["workspace"] == "/workspace"
+    assert recursive_kwargs["api_token_scopes"] == {"chat", "email:read"}
+    assert recursive_kwargs["max_tool_calls"] == 3
+    assert recursive_kwargs["auth_manager"] is auth_manager
 
 
 @pytest.mark.asyncio

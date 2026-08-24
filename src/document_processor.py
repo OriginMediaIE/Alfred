@@ -344,6 +344,9 @@ def analyze_image_with_vl_result(image_path: str, owner: str | None = None) -> d
         except ValueError:
             return {"text": "[No vision model configured — set one in Settings → Vision]", "model": vl_model or ""}
 
+        from services.privacy_service import get_privacy_service
+        get_privacy_service().ensure_local_endpoint(owner, url, purpose="vision request")
+
         with open(image_path, "rb") as f:
             img_data = base64.b64encode(f.read()).decode("utf-8")
 

@@ -46,6 +46,9 @@ The warnings included SQLAlchemy and Pydantic deprecations plus three scheduler 
 
 ### 2.3 Live native smoke evidence
 
+This subsection is historical baseline evidence from 2026-07-18. The Phase 1
+contract and current evidence are recorded in 2.4 below.
+
 The native server was observed on `127.0.0.1:7860`:
 
 | Probe | Observed result |
@@ -65,6 +68,144 @@ The native server was observed on `127.0.0.1:7860`:
 The subsequent manual browser pass completed invalid-login rejection, administrator login, dashboard/chat rendering, a real Ollama `qwen3:1.7b` response, task and note creation, calendar and email-settings entry, knowledge/import entry, process restart, conversation/task/note persistence, logout, and cleanup of the temporary task and note. The model's final answer matched the requested text, but the UI also exposed its raw reasoning trace; that is a release-blocking presentation defect.
 
 This is meaningful native baseline evidence, not proof that the complete product works. No provider-backed calendar event, email account, document indexing/retrieval, backup/restore, Docker launch, or complete Google workflow was demonstrated, and ChromaDB remained degraded.
+
+### 2.4 Personal PrivateOS Phase 1 gate - 2026-08-21
+
+The current Apple Silicon native profile passed the Local Core Stabilisation
+gate:
+
+- `GET /api/health` is unauthenticated and returns 200 with status `live`.
+- `GET /api/ready` is unauthenticated and secret-free. It returned 200 with
+  status `degraded` while ChromaDB was offline because every required core check
+  was healthy and the vector store is optional/degraded.
+- Required readiness covers database, writable private storage, POSIX modes,
+  app lifecycle, scheduler, meeting worker, automation worker, and privacy
+  worker. Required failure returns status `failed` and HTTP 503.
+- A real isolated lifespan started all four bundled stdio MCP servers and shut
+  down with zero tracked app tasks and zero MCP owner tasks alive. No AnyIO
+  cancel-scope errors were emitted.
+- Existing `.env`, databases, JSON state, keys, logs, and runtime directories on
+  the current Mac were normalized to owner-only modes.
+- `om-agent:qwen3.5-9b` and `qwen3:1.7b` are installed in Ollama. Docker Desktop
+  is stopped, so real Compose startup remains unverified.
+- Final full command: `ODYSSEUS_DATA_DIR=<short-temporary-directory>
+  TMPDIR=/tmp/alfred-ot ./venv/bin/python -m pytest -q`.
+- Result: **4,958 passed, 3 skipped, 0 failed, 10 warnings in 179.72 seconds**.
+
+### 2.5 Personal PrivateOS Phase 2 gate - 2026-08-21
+
+The current Apple Silicon native profile passed the Trust Boundary And
+Approvals source and automated behaviour gate:
+
+- All 109 built-in executable tools have canonical metadata; registry
+  validation allows no legacy/unclassified exception.
+- Executor ingress rejects unknown, drifted, unauthorized, unqualified-model,
+  malformed, stale, replayed, wrong-owner, wrong-origin, and argument-changed
+  actions.
+- Approval records bind exact canonical arguments, revision, tool/version,
+  origin, request/session identity, owner, expiry and a one-time consumed nonce.
+- Pending and executing actions can be cancelled. Executing cancellation
+  signals the active task and records `reconciliation_required` without a false
+  reversal claim.
+- Shell/Python/file/MCP boundaries, untrusted-content proposal boundaries,
+  incognito non-persistence, reasoning removal, backup sanitation, and redacted
+  audit results have focused regression coverage.
+- Approval/cancellation gate: **48 passed**. MCP/sandbox/registry/runtime gate:
+  **100 passed**.
+- Restricted full command: `./venv/bin/python -m pytest -q`.
+- Restricted result: **4,950 passed, 20 failed, 3 skipped, 10 warnings in
+  174.60 seconds**; all failures were local socket, Unix-socket or DNS
+  permission denials.
+- Socket-enabled rerun of the complete affected files: **65 passed, 0 failed,
+  1 warning in 3.47 seconds**.
+- `compileall` and `git diff --check` passed. API, Node helper, and static UI
+  contracts cover Approval Centre; manual authenticated browser and real
+  provider mutation/reversal drills were not repeated and remain explicit
+  external evidence gaps.
+- The final tree started on `127.0.0.1:7000`. Liveness returned `live` and
+  readiness returned usable `degraded`; every required check was healthy and
+  only optional ChromaDB/vector storage was degraded.
+
+### 2.6 Personal PrivateOS Phase 3 gate - 2026-08-21
+
+The current Apple Silicon native profile passed the Personal Operating Loop
+source, service, route, persistence, and interface gate:
+
+- Focused command covered executive briefings, Work, Google connection,
+  Calendar, Gmail, approval ledger, operational health, routes, tools and static
+  UI contracts.
+- Result: **113 passed, 0 failed, 1 warning in 3.49 seconds**.
+- Durable briefing tests prove owner isolation and idempotence; source tests
+  prove concrete references and explicit missing-source states.
+- Google doubles cover PKCE, one-time state, encrypted tokens, scope checks,
+  refresh/revoke, Calendar CRUD/respond/free-busy/timezone/recurrence, Gmail
+  search/read/thread/labels/archive/draft/reply/send, exact approval and
+  deterministic readback.
+- An authenticated isolated browser smoke covered Today and Work on desktop and
+  390 x 844 mobile viewports. Both had zero horizontal overflow; briefing
+  history, metrics, health, provenance and planning controls rendered without
+  console errors.
+- JavaScript syntax, Python compilation and `git diff --check` passed.
+- Restricted full command: `./venv/bin/python -m pytest -q`.
+- Restricted result: **4,955 passed, 20 failed, 3 skipped, 10 warnings in
+  179.56 seconds**; all failures were denied local TCP, Unix-socket, or DNS
+  operations.
+- Socket-enabled rerun of all affected files: **65 passed, 0 failed, 1 warning
+  in 3.58 seconds**.
+- A real Google grant, Gmail send and Calendar mutation were deliberately not
+  performed and remain opt-in acceptance tests with a dedicated account.
+
+### 2.7 Personal PrivateOS Phase 4 gate - 2026-08-21
+
+- Focused meeting, Knowledge, memory, automation, Life, privacy, vault, route,
+  and static-interface gate: **71 passed, 0 failed**.
+- Expanded domain selection (`knowledge or meeting or memory or automation or
+  life or privacy or vault`): **165 passed, 4,818 deselected, 0 failed, 1
+  warning in 12.89 seconds**.
+- Restricted full command: `./venv/bin/python -m pytest -q`.
+- Restricted result: **4,960 passed, 20 failed, 3 skipped, 10 warnings in
+  170.04 seconds**; every failure was a denied local TCP, Unix-socket, or DNS
+  operation.
+- Socket-enabled rerun of every affected file: **65 passed, 0 failed, 1 warning
+  in 3.91 seconds**.
+- Service tests prove owner isolation, source/derivative deletion, grounded
+  citations, incognito memory exclusion, vault evidence and correction,
+  meeting-to-task/Knowledge flow, routine idempotence, service-restart
+  persistence, and measured successful runs.
+- Isolated browser smoke rendered the vault evidence/review form and all six
+  routine templates. The 390 x 844 mobile viewport had zero body/dialog
+  horizontal overflow and the browser console had zero errors.
+- JavaScript syntax and Python compilation passed. ChromaDB and real
+  transcription-quality acceptance remain explicit gaps.
+
+### 2.8 Personal PrivateOS Phase 5 implementation gate - 2026-08-21
+
+- New Phase 5 regressions cover encrypted portable backup, SQLite preflight,
+  empty-directory restore, completed-restore rollback, release preflight,
+  non-inflatable soak evidence, idempotent synthetic demo data, exact companion
+  scopes, session-only token storage, and mobile safe-area layout.
+- Final focused command across Phase 5 backup, release, demo, companion,
+  migrations, auth, and privacy files: **51 passed, 0 failed, 1 warning in 6.05
+  seconds**.
+- Fresh-install rehearsal against the live data root restored and
+  manifest-verified **32 files and 6 SQLite databases**; rollback evidence was
+  created and the real data root was not mutated.
+- Restricted full command: `venv/bin/python -m pytest -q`.
+- Restricted result: **4,970 passed, 20 failed, 3 skipped, 10 warnings in
+  172.07 seconds**. All 20 failures were the established managed-sandbox TCP,
+  Unix-socket, or DNS denials.
+- Socket-enabled rerun of every affected file: **230 passed, 0 failed, 1
+  warning in 3.89 seconds**.
+- Live probes: `/api/health` returned `live`; `/api/ready` returned usable
+  degraded readiness with only optional ChromaDB unavailable; unauthenticated
+  `/api/companion/today` returned 401.
+- Browser inspection rendered all four companion views with no horizontal
+  overflow or overlapping controls. Exact 390 x 844 coverage is additionally
+  enforced by responsive constraints/static tests; physical iPhone Safari
+  remains operator acceptance.
+- The seven-day soak gate is intentionally **not passed**. It begins only when
+  genuine daily use is recorded; automated or synthetic dates are not valid
+  release evidence.
 
 ## 3. Test isolation and evidence rules
 
@@ -260,14 +401,14 @@ These are initial engineering gates, not claims about the current product. Provi
 
 | Defect | Required regression test |
 | --- | --- |
-| `/api/ready` returns 401 without a session | Unauthenticated orchestrator probe returns safe 200/503 |
-| Readiness checks only DB/data directory | Force each critical subsystem down and assert the correct degraded result |
+| `/api/ready` returns 401 without a session | **Fixed in Phase 1:** unauthenticated orchestrator probe returns safe 200/503 |
+| Readiness checks only DB/data directory | **Fixed in Phase 1:** required lifecycle/scheduler/workers/permissions and optional degraded vector state are classified |
 | Compose lacks Odysseus/ChromaDB/ntfy health checks | Compose installation test waits on all required services |
-| `APP_LOGS_DIR` mounts `/app/logs`, while app writes `/app/data/logs/app.log` | Container test writes and tails the documented host log path |
-| Native `.env`, auth, DB, settings, sessions, and logs were created as `0644` | POSIX installation test asserts secret-bearing files are `0600` and directories `0700` |
+| `APP_LOGS_DIR` mounts `/app/logs`, while app writes `/app/data/logs/app.log` | **Fixed in Phase 1:** mount now targets `/app/data/logs`; real Docker persistence test remains pending |
+| Native `.env`, auth, DB, settings, sessions, and logs were created as `0644` | **Fixed for current POSIX profile:** startup/setup repair to `0600` files and `0700` directories; Windows ACL acceptance remains pending |
 | Core requirements and several container images float | Lock verification rejects unpinned requirements, tags, or missing digests |
 | Manual native path does not start ChromaDB | Fresh native smoke either starts Chroma or clearly selects a supported degraded profile |
-| MCP shutdown logged cancel-scope errors | Start/stop/restart test asserts clean child teardown and no orphan process |
+| MCP shutdown logged cancel-scope errors | **Fixed in Phase 1:** owner-task transport lifecycle passed real four-server start/stop and full regression gate |
 | Research tests hardcode relative `data/` | Run suite with a non-default `ODYSSEUS_DATA_DIR` |
 | Pytest is non-blocking in CI | Required CI job fails the pipeline on any mandatory test failure |
 

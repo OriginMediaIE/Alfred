@@ -16,10 +16,32 @@ def _collect(gen):
 
 def test_agent_reuses_one_internal_tool_request_id_per_stream(monkeypatch):
     captured = []
+    captured_auth_managers = []
+    auth_manager = object()
 
     monkeypatch.setattr(agent_loop, "get_setting", lambda key, default=None: default)
     monkeypatch.setattr(agent_loop, "get_mcp_manager", lambda: None)
     monkeypatch.setattr(agent_loop, "estimate_tokens", lambda *args, **kwargs: 10)
+    real_authority_for_owner = agent_loop.authority_for_owner
+
+    def capture_authority(
+        owner,
+        *,
+        surface,
+        auth_manager=None,
+        api_token_scopes=None,
+        origin=None,
+    ):
+        captured_auth_managers.append(auth_manager)
+        return real_authority_for_owner(
+            owner,
+            surface=surface,
+            auth_manager=auth_manager,
+            api_token_scopes=api_token_scopes,
+            origin=origin,
+        )
+
+    monkeypatch.setattr(agent_loop, "authority_for_owner", capture_authority)
 
     async def fake_stream(_candidates, _messages, **_kwargs):
         calls = [
@@ -52,7 +74,9 @@ def test_agent_reuses_one_internal_tool_request_id_per_stream(monkeypatch):
                 relevant_tools={"list_served_models"},
                 session_id="session-a",
                 owner="alice",
+                auth_manager=auth_manager,
                 _is_teacher_run=True,
+                _certified_tool_calling=True,
             )
         )
 
@@ -68,10 +92,14 @@ def test_agent_reuses_one_internal_tool_request_id_per_stream(monkeypatch):
     assert re.fullmatch(r"[0-9a-f]{32}", first_id)
     assert re.fullmatch(r"[0-9a-f]{32}", second_id)
     assert all(value not in {"model-forged-a", "model-forged-b"} for _, value in captured)
+    assert captured_auth_managers
+    assert all(value is auth_manager for value in captured_auth_managers)
 
 
 def test_executor_forwards_request_id_to_cookbook_diagnostic_tools(monkeypatch):
     from src.agent_tools import ToolBlock
+    from src.tool_authorization import ExecutionAuthority
+    from src.tool_registry import ToolSurface
     import src.tool_execution as tool_execution
     import src.tool_implementations as implementations
 
@@ -85,21 +113,36 @@ def test_executor_forwards_request_id_to_cookbook_diagnostic_tools(monkeypatch):
         return call
 
     monkeypatch.setattr(tool_execution, "_owner_is_admin", lambda _owner: True)
-    for name in ("serve_model", "list_served_models", "tail_serve_output"):
+    for name in ("list_served_models", "tail_serve_output"):
         monkeypatch.setattr(implementations, f"do_{name}", replacement(name))
 
     async def invoke():
-        for name in ("serve_model", "list_served_models", "tail_serve_output"):
+        authority = ExecutionAuthority(
+            owner="alice",
+            permissions=frozenset(
+                {"models.runtime.read", "models.diagnostics.read"}
+            ),
+            surface=ToolSurface.FENCE,
+        )
+        for name, content in (
+            ("list_served_models", "{}"),
+            ("tail_serve_output", '{"session_id":"serve-a"}'),
+        ):
             await tool_execution.execute_tool_block(
-                ToolBlock(name, "{}"),
+                ToolBlock(name, content),
                 owner="alice",
                 request_id="internal-request",
+                authority=authority,
             )
 
     asyncio.run(invoke())
 
     assert captured == [
-        ("serve_model", "{}", "alice", "internal-request"),
         ("list_served_models", "{}", "alice", "internal-request"),
-        ("tail_serve_output", "{}", "alice", "internal-request"),
+        (
+            "tail_serve_output",
+            '{"session_id":"serve-a"}',
+            "alice",
+            "internal-request",
+        ),
     ]

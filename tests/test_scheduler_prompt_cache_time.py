@@ -49,6 +49,7 @@ async def test_scheduler_agent_loop_path(monkeypatch):
 
     async def _stub_stream(**kwargs):
         captured["messages"] = list(kwargs.get("messages", []))
+        captured["auth_manager"] = kwargs.get("auth_manager")
         return
         yield  # async generator
 
@@ -56,7 +57,11 @@ async def test_scheduler_agent_loop_path(monkeypatch):
     monkeypatch.setattr("src.task_endpoint.resolve_task_candidates", lambda **kw: [])
 
     from src.task_scheduler import TaskScheduler
-    await TaskScheduler(session_manager=None)._execute_llm_task(_make_task(), db=None)
+    auth_manager = object()
+    await TaskScheduler(
+        session_manager=None,
+        auth_manager=auth_manager,
+    )._execute_llm_task(_make_task(), db=None)
 
     msgs = captured.get("messages", [])
     assert len(msgs) == 3, f"expected 3 messages, got {len(msgs)}"
@@ -66,6 +71,7 @@ async def test_scheduler_agent_loop_path(monkeypatch):
     assert "## Current date and time" in msgs[1]["content"]
     assert msgs[2]["role"] == "user"
     assert msgs[2]["content"] == "run the digest"
+    assert captured["auth_manager"] is auth_manager
 
 
 # ---------------------------------------------------------------------------

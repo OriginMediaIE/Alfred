@@ -24,8 +24,12 @@ from fastapi.responses import HTMLResponse
 
 from core.middleware import require_admin
 from src.auth_helpers import get_current_user
+from src.branding import get_brand_config
 
 from companion import pairing as _pairing
+
+
+_BRAND = get_brand_config()
 
 
 def token_owner(request: Request) -> str | None:
@@ -53,16 +57,20 @@ def owner_can_see(row_owner, owner) -> bool:
     return row_owner is None or row_owner == owner
 
 
-def require_models_scope(request: Request) -> None:
-    """Require the companion chat scope for bearer-token model inventory."""
+def require_companion_scope(request: Request, required_scope: str) -> None:
+    """Require one narrow capability for bearer callers; sessions remain valid."""
     if not getattr(request.state, "api_token", False):
         return
     scopes = getattr(request.state, "api_token_scopes", None) or []
     if isinstance(scopes, str):
         scopes = [scope.strip() for scope in scopes.split(",")]
     scope_set = {str(scope).strip() for scope in scopes if str(scope).strip()}
-    if _pairing.COMPANION_SCOPE not in scope_set:
-        raise HTTPException(403, "API token requires chat scope")
+    if required_scope not in scope_set:
+        raise HTTPException(403, f"API token requires {required_scope} scope")
+
+
+def require_models_scope(request: Request) -> None:
+    require_companion_scope(request, _pairing.COMPANION_SCOPE)
 
 
 def mint_pairing_token(owner: str, invalidate=None) -> tuple[str, str]:
@@ -103,7 +111,50 @@ def setup_companion_routes() -> APIRouter:
             "name": "odysseus",
             "version": APP_VERSION,
             "owner": token_owner(request),
-            "capabilities": {"chat": True, "streaming": True},
+            "capabilities": {
+                "chat": True,
+                "streaming": True,
+                "today": True,
+                "approvals_read": True,
+                "notifications": True,
+            },
+        }
+
+    @router.get("/today")
+    async def today(request: Request):
+        require_companion_scope(request, "companion:read")
+        from services.executive_service import get_executive_service
+
+        owner = token_owner(request)
+        if not owner:
+            raise HTTPException(401, "Companion owner could not be resolved")
+        return await get_executive_service().today(owner)
+
+    @router.get("/approvals")
+    def approvals(request: Request):
+        require_companion_scope(request, "approvals:read")
+        from src.action_ledger import get_action_ledger
+
+        owner = token_owner(request)
+        if not owner:
+            raise HTTPException(401, "Companion owner could not be resolved")
+        return {"actions": get_action_ledger().list_actions(owner, status="pending", limit=50)}
+
+    @router.get("/notifications")
+    def notifications(request: Request):
+        require_companion_scope(request, "companion:read")
+        from src.action_ledger import get_action_ledger
+        from src.work_service import get_work_service
+
+        owner = token_owner(request)
+        if not owner:
+            raise HTTPException(401, "Companion owner could not be resolved")
+        actions = get_action_ledger().list_actions(owner, status="pending", limit=50)
+        reminders = get_work_service().pending_reminders(owner, limit=100)
+        return {
+            "approval_count": len(actions),
+            "reminder_count": len(reminders),
+            "reminders": reminders,
         }
 
     @router.get("/models")
@@ -178,7 +229,7 @@ def setup_companion_routes() -> APIRouter:
 </style></head>
 <body><div class="card">
   <h2>Pair a device</h2>
-  <p>Generate a one-time pairing code (a chat-scoped API token) for a LAN client.</p>
+  <p>Generate a one-time pairing code for chat and read-only Private OS views.</p>
   <form method="POST" action="/api/companion/pair">
     <button type="submit">Generate pairing code</button>
   </form>
@@ -241,7 +292,7 @@ def setup_companion_routes() -> APIRouter:
   <div class="row"><strong>Port:</strong> <code>{html.escape(str(port))}</code></div>
   <div class="row"><strong>Token:</strong> <code>{html.escape(raw_token)}</code></div>
   <div class="row"><strong>Payload:</strong> <code>{html.escape(payload_json)}</code></div>
-  <p class="warn">Shown once. This grants chat access to your Odysseus; revoke it
+  <p class="warn">Shown once. This grants chat access to your {html.escape(_BRAND.product_name)}; revoke it
   in Settings &rarr; API tokens (id <code>{html.escape(token_id)}</code>). The
   device must be on the same network, and the server must bind to your LAN.</p>
 </div></body></html>"""

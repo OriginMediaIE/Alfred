@@ -273,7 +273,18 @@ def test_search_chats_formats_shared_results(monkeypatch):
     from src import session_search
     from src.tool_implementations import do_search_chats
 
-    def fake_search(query, limit=20, owner=None, include_archived=False, context_messages=1, db=None):
+    def fake_search(
+        query,
+        limit=20,
+        owner=None,
+        include_archived=False,
+        context_messages=1,
+        restrict_owner=True,
+        include_legacy_owner=True,
+        db=None,
+    ):
+        assert restrict_owner is True
+        assert include_legacy_owner is False
         return [
             SessionSearchResult(
                 message_id="m2",

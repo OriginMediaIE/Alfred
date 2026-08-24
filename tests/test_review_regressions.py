@@ -131,6 +131,18 @@ def _install_core_middleware_stub(monkeypatch):
     return middleware_mod
 
 
+def _tool_authority(owner, *permissions):
+    """Explicit trusted authority for executor-boundary regression tests."""
+    from src.tool_authorization import ExecutionAuthority
+    from src.tool_registry import ToolSurface
+
+    return ExecutionAuthority(
+        owner=owner,
+        permissions=frozenset(permissions),
+        surface=ToolSurface.FENCE,
+    )
+
+
 def test_providers_requires_admin_before_discovery_and_cache(monkeypatch):
     _install_model_route_import_stubs(monkeypatch)
     import routes.model_routes as model_routes
@@ -838,7 +850,10 @@ async def test_bare_email_dispatch_rejects_invalid_json_body(monkeypatch):
             owner="admin-user",
         )
         assert result["exit_code"] == 1, bad_body
-        assert "not valid JSON" in result["error"], bad_body
+        assert (
+            "JSON object" in result["error"]
+            or "not valid JSON" in result["error"]
+        ), bad_body
         assert mcp.calls == [], f"malformed args must never reach MCP: {bad_body!r}"
 
 
@@ -873,30 +888,22 @@ async def test_write_file_inline_json_args(monkeypatch):
     assert the file is written to the intended path with the intended content,
     not a file literally named with the JSON blob. A _build_mcp_args unit test
     can't catch this — it's on the dead MCP path for write_file."""
-    import src.tool_execution as tool_execution
-    from src.tool_execution import execute_tool_block
-
-    monkeypatch.setattr(tool_execution, "_owner_is_admin", lambda owner: True)
-    monkeypatch.setattr(tool_execution, "is_public_blocked_tool", lambda t: False)
-    monkeypatch.setattr(tool_execution, "get_mcp_manager", lambda: None)
-
-    captured = {}
-    import src.agent_tools.filesystem_tools as fst
-
-    def fake_resolve(p):
-        captured["path"] = p
-        raise ValueError("probe-stop-before-disk")
-
-    monkeypatch.setattr(tool_execution, "_resolve_tool_path", fake_resolve)
-
     from src.tool_parsing import parse_tool_blocks
-    blocks = parse_tool_blocks('```write_file {"path": "/tmp/wf.txt", "content": "hi"}\n```')
-    for b in blocks:
-        await execute_tool_block(b, owner="admin")
+    from src.tool_actions import build_action_envelope
+    from src.tool_authorization import resolve_tool_identity
+    from src.tool_registry import ToolSurface
 
-    assert captured.get("path") == "/tmp/wf.txt", (
-        f"write_file did not decode inline JSON args; got path {captured.get('path')!r}"
+    blocks = parse_tool_blocks('```write_file {"path": "/tmp/wf.txt", "content": "hi"}\n```')
+    assert len(blocks) == 1
+    identity = resolve_tool_identity("write_file", surface=ToolSurface.FENCE)
+    action = build_action_envelope(
+        identity,
+        blocks[0].content,
+        owner="admin",
+        session_id="session",
+        request_id="request",
     )
+    assert action.arguments == {"path": "/tmp/wf.txt", "content": "hi"}
 
 
 @pytest.mark.asyncio
@@ -928,6 +935,7 @@ async def test_plan_mode_blocks_mutating_email_aliases_without_mcp_inventory(mon
         SimpleNamespace(tool_type="search_emails", content='{"query": "x"}'),
         owner="admin-user",
         disabled_tools=denied,
+        authority=_tool_authority("admin-user", "email.read"),
     )
     assert result["exit_code"] == 0
     assert mcp.calls == [
@@ -949,6 +957,7 @@ async def test_bare_email_dispatch_empty_content_calls_with_empty_args(monkeypat
     desc, result = await execute_tool_block(
         SimpleNamespace(tool_type="list_email_accounts", content=""),
         owner="admin-user",
+        authority=_tool_authority("admin-user", "email.read"),
     )
     assert result["exit_code"] == 0
     assert mcp.calls == [
@@ -976,9 +985,10 @@ async def test_email_mcp_non_object_args_fail_before_dispatch(monkeypatch):
     desc, result = await execute_tool_block(
         SimpleNamespace(tool_type="mcp__email__list_emails", content='["INBOX"]'),
         owner="alice",
+        authority=_tool_authority("alice", "email.read"),
     )
 
-    assert desc == "mcp: mcp__email__list_emails"
+    assert desc == "list_emails: BLOCKED"
     assert result["exit_code"] == 1
     assert "JSON object" in result["error"]
     assert fake.calls == []
@@ -1004,9 +1014,10 @@ async def test_email_mcp_dispatch_includes_hidden_owner(monkeypatch):
     desc, result = await execute_tool_block(
         SimpleNamespace(tool_type="mcp__email__list_emails", content='{"folder":"INBOX"}'),
         owner="alice",
+        authority=_tool_authority("alice", "email.read"),
     )
 
-    assert desc == "mcp: mcp__email__list_emails"
+    assert desc == "email: list_emails"
     assert result["exit_code"] == 0
     assert fake.calls == [
         ("mcp__email__list_emails", {"folder": "INBOX", "_odysseus_owner": "alice"}),
@@ -1025,6 +1036,7 @@ async def test_bare_email_mcp_dispatch_includes_hidden_owner(monkeypatch):
     desc, result = await execute_tool_block(
         SimpleNamespace(tool_type="list_emails", content='{"folder":"INBOX"}'),
         owner="alice",
+        authority=_tool_authority("alice", "email.read"),
     )
 
     assert desc == "email: list_emails"

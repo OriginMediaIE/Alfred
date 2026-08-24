@@ -23,3 +23,22 @@ def _internal_headers(owner: Optional[str] = None) -> Dict[str, str]:
     if owner:
         headers["X-Odysseus-Owner"] = owner
     return headers
+
+
+def _configured_auth_requires_owner(owner: Optional[str]) -> bool:
+    """Return whether a tool call is missing its required authenticated owner.
+
+    Agent-tool implementations do not receive a FastAPI ``Request``, so they
+    cannot prove that an ownerless call came from the narrowly allowed
+    unconfigured-loopback setup route.  Fail closed whenever auth is enabled;
+    explicit ``AUTH_ENABLED=false`` is the sole documented ownerless
+    single-user mode.  This check only reads process configuration and never
+    constructs ``AuthManager`` (whose initialization can perform migrations).
+    """
+
+    if str(owner or "").strip():
+        return False
+
+    from src.auth_helpers import _auth_disabled
+
+    return not _auth_disabled()

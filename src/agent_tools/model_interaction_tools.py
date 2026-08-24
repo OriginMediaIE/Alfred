@@ -114,18 +114,20 @@ async def ask_teacher(content: str, session_id: Optional[str] = None, owner: Opt
 
 
 async def list_models(content: str, session_id: Optional[str] = None, owner: Optional[str] = None) -> Dict:
-    """List all available models across configured endpoints.
+    """List locally recorded models across configured endpoints.
 
+    This is an observational catalog read.  It intentionally uses only the
+    endpoint rows already stored in the local database: no endpoint probing,
+    provider discovery, credential refresh, or network request is performed.
     Content = optional filter keyword.
     """
-    import json
-    import httpx
     from src.database import SessionLocal, ModelEndpoint
-    from src.llm_core import _detect_provider, ANTHROPIC_MODELS
+    from src.llm_core import _detect_provider
     from src.auth_helpers import owner_filter
-    from src.endpoint_resolver import resolve_endpoint_runtime, build_headers, build_models_url
+    from src.endpoint_resolver import _endpoint_enabled_models
 
     keyword = content.strip().lower() if content.strip() else None
+    catalog_source = "local_endpoint_catalog"
 
     db = SessionLocal()
     try:
@@ -134,55 +136,69 @@ async def list_models(content: str, session_id: Optional[str] = None, owner: Opt
             query = owner_filter(query, ModelEndpoint, owner)
         endpoints = query.all()
         if not endpoints:
-            return {"results": "No enabled model endpoints configured."}
+            return {
+                "results": "No enabled model endpoints configured.",
+                "models": [],
+                "source": catalog_source,
+                "runtime_verified": False,
+            }
 
         result_lines = []
-        total_models = 0
+        catalog = []
 
         for ep in endpoints:
-            try:
-                base, api_key = resolve_endpoint_runtime(ep, owner=owner)
-            except Exception:
-                continue
-            provider = _detect_provider(base)
-            headers = build_headers(api_key, base)
-
-            model_ids = []
-            if provider == "anthropic":
-                model_ids = list(ANTHROPIC_MODELS)
-            else:
-                try:
-                    models_url = build_models_url(base)
-                    if models_url:
-                        r = httpx.get(models_url, headers=headers, timeout=5)
-                        r.raise_for_status()
-                        data = r.json()
-                        model_ids = [m.get("id") for m in (data.get("data") or []) if m.get("id")]
-                        if not model_ids:
-                            model_ids = [
-                                m.get("name") or m.get("model")
-                                for m in (data.get("models") or [])
-                                if m.get("name") or m.get("model")
-                            ]
-                    else:
-                        model_ids = json.loads(ep.cached_models or "[]")
-                except Exception:
-                    model_ids = ["(endpoint offline)"]
+            configured_base = str(getattr(ep, "base_url", "") or "")
+            provider = _detect_provider(configured_base)
+            endpoint_name = str(
+                getattr(ep, "name", "")
+                or configured_base
+                or getattr(ep, "id", "")
+                or "Unnamed endpoint"
+            )
+            model_ids = _endpoint_enabled_models(ep)
 
             if keyword:
-                model_ids = [m for m in model_ids if keyword in m.lower() or keyword in (ep.name or "").lower()]
+                endpoint_matches = keyword in endpoint_name.lower()
+                model_ids = [
+                    model_id
+                    for model_id in model_ids
+                    if endpoint_matches or keyword in model_id.lower()
+                ]
 
             if model_ids:
-                result_lines.append(f"\n**{ep.name or base}** ({provider}):")
-                for mid in model_ids:
-                    result_lines.append(f"  - `{mid}`")
-                    total_models += 1
+                result_lines.append(f"\n**{endpoint_name}** ({provider}):")
+                for model_id in model_ids:
+                    result_lines.append(f"  - `{model_id}`")
+                    catalog.append({
+                        "id": model_id,
+                        "endpoint": endpoint_name,
+                        "provider": provider,
+                        "source": catalog_source,
+                        "runtime_verified": False,
+                    })
 
         if not result_lines:
-            return {"results": "No models found" + (f" matching '{keyword}'" if keyword else "") + "."}
+            return {
+                "results": (
+                    "No locally recorded enabled models found"
+                    + (f" matching '{keyword}'" if keyword else "")
+                    + ". Runtime availability was not probed."
+                ),
+                "models": [],
+                "source": catalog_source,
+                "runtime_verified": False,
+            }
 
-        header = f"Available models ({total_models} total):"
-        return {"results": header + "\n".join(result_lines)}
+        header = (
+            f"Configured models ({len(catalog)} total; local catalog only, "
+            "runtime availability not probed):"
+        )
+        return {
+            "results": header + "\n".join(result_lines),
+            "models": catalog,
+            "source": catalog_source,
+            "runtime_verified": False,
+        }
     except Exception as e:
         logger.error(f"list_models failed: {e}")
         return {"error": str(e)}

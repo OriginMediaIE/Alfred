@@ -10,6 +10,7 @@
 # repaired on every start (idempotent), then exec the real command
 # as that user via gosu.
 set -e
+umask 077
 
 PUID="${PUID:-1000}"
 PGID="${PGID:-1000}"
@@ -71,7 +72,7 @@ repair_tree_ownership() {
 repair_app_tree_ownership() {
     if [ -d /app ]; then
         find /app -xdev \
-            \( -path /app/data -o -path /app/logs -o -path /app/.ssh -o -path /app/.cache -o -path /app/.local \) -prune \
+            \( -path /app/data -o -path /app/.ssh -o -path /app/.cache -o -path /app/.local \) -prune \
             -o -not -uid "$PUID" -print0 2>/dev/null \
             | xargs -0 -r chown "$PUID:$PGID" 2>/dev/null || true
     fi
@@ -96,9 +97,11 @@ repair_bind_mount_ownership() {
 # Repair image-owned writable paths without walking into bind-mounted host
 # trees, then repair the app-owned mount roots separately.
 repair_app_tree_ownership
-for dir in /app/data /app/logs /app/.ssh /app/.cache/huggingface /app/.local; do
+for dir in /app/data /app/data/logs /app/.ssh /app/.cache/huggingface /app/.local; do
     repair_bind_mount_ownership "$dir"
 done
+
+chmod 700 /app/data /app/data/logs /app/.ssh 2>/dev/null || true
 
 # Cookbook installs vllm/etc. via `pip install --user`, which pulls
 # nvidia-cuda-* wheels into /app/.local but does not set CUDA_HOME or

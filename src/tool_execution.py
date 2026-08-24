@@ -10,6 +10,7 @@ Extracted from agent_tools.py.
 import asyncio
 import collections
 import contextvars
+import importlib
 import json
 import logging
 import os
@@ -17,7 +18,9 @@ import pathlib
 import re
 import sys
 import time
-from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Awaitable, Callable, Dict, Mapping, Optional, Tuple
 
 
 
@@ -28,15 +31,32 @@ from src.tool_security import (
     owner_is_admin_or_single_user,
 )
 from src.tool_policy import ToolPolicy
+from src.tool_authorization import (
+    ExecutionAuthority,
+    PolicyDecisionKind,
+    ResolvedToolIdentity,
+    ToolPolicyDecision,
+    authority_for_owner,
+    deny_resolved_tool,
+    evaluate_resolved_tool_policy,
+    resolve_tool_identity,
+)
+from src.tool_actions import ActionArgumentError, build_action_envelope
+from src.action_verification import (
+    prepare_action_verification,
+    result_with_verification,
+    verification_status_from_result,
+    verify_action_result,
+)
+from src.tool_registry import ToolDefinition, ToolSurface, build_builtin_registry
 from src.constants import MAX_OUTPUT_CHARS, MAX_READ_CHARS, MAX_DIFF_LINES, DATA_DIR
 from src.tool_utils import _truncate, get_mcp_manager
 
 # Persistent working directory for agent subprocesses.
-# Resolves to <repo_root>/data, which is the bind-mounted volume in Docker
-# (/app/data) and the local data directory for manual installs.
-# Using this as cwd and HOME prevents the agent from silently creating files
-# in ephemeral container layers that are lost on the next rebuild.
-_AGENT_WORKDIR = DATA_DIR
+# The agent never receives the application control-plane data root. Its
+# persistent default workspace is a dedicated subtree that cannot contain
+# auth, OAuth, database, settings, or encryption-key state.
+_AGENT_WORKDIR = str(pathlib.Path(DATA_DIR) / "agent-workspace")
 
 
 
@@ -102,6 +122,19 @@ def _is_sensitive_path(resolved: str) -> bool:
     return filename in _SENSITIVE_FILE_PATTERNS_CF
 
 
+def _is_control_plane_data_path(resolved: str) -> bool:
+    """Block DATA_DIR even when it sits beneath an otherwise allowed temp root."""
+
+    data_root = os.path.realpath(DATA_DIR)
+    agent_root = os.path.realpath(_AGENT_WORKDIR)
+    try:
+        in_data = os.path.commonpath([resolved, data_root]) == data_root
+        in_agent_workspace = os.path.commonpath([resolved, agent_root]) == agent_root
+    except ValueError:
+        return False
+    return in_data and not in_agent_workspace
+
+
 def _tool_path_roots() -> list[str]:
     """Return the list of directory roots that read_file / write_file
     may touch. Default: project data/ + system temp dirs. Extra roots
@@ -109,9 +142,9 @@ def _tool_path_roots() -> list[str]:
     """
     roots: list[str] = []
 
-    # Project data directory — the agent's primary workspace.
-    from src.constants import DATA_DIR
-    roots.append(DATA_DIR)
+    # Dedicated user-file workspace. The broad DATA_DIR is intentionally not
+    # allowed because it also contains application secrets and databases.
+    roots.append(_AGENT_WORKDIR)
 
     # /tmp (and its macOS realpath /private/tmp).
     roots.append("/tmp")
@@ -172,7 +205,15 @@ def _resolve_tool_path(raw_path: str) -> str:
     if raw_path is None or not str(raw_path).strip():
         raise ValueError("path is required")
     expanded = os.path.expanduser(str(raw_path).strip())
-    resolved = os.path.realpath(expanded)
+    # Relative tool paths belong to the agent's dedicated work directory, not
+    # the server process cwd. The subprocess tools already use agent_cwd();
+    # keeping file resolution aligned prevents both surprising denials and
+    # accidental writes into the source checkout.
+    candidate = expanded if os.path.isabs(expanded) else os.path.join(agent_cwd(), expanded)
+    resolved = os.path.realpath(candidate)
+
+    if _is_control_plane_data_path(resolved):
+        raise ValueError(f"path '{raw_path}' is outside the allowed roots")
 
     if _is_sensitive_path(resolved):
         raise ValueError(
@@ -242,6 +283,14 @@ _active_workspace: contextvars.ContextVar = contextvars.ContextVar(
     "agent_active_workspace", default=None
 )
 
+# The canonical registry deadline for the currently executing tool.  Handler
+# context derives this value from trusted registry metadata; model arguments
+# cannot supply or widen it.  A context variable keeps concurrent tool calls
+# isolated while avoiding timeout plumbing through every legacy dispatch arm.
+_active_tool_timeout_seconds: contextvars.ContextVar = contextvars.ContextVar(
+    "agent_active_tool_timeout_seconds", default=None
+)
+
 
 def get_active_workspace() -> Optional[str]:
     """The folder the agent is confined to this turn, or None."""
@@ -275,7 +324,11 @@ def vet_workspace(raw: str) -> Optional[str]:
 def agent_cwd() -> str:
     """Working directory for agent subprocesses (bash/python/background jobs):
     the active workspace when set, else the persistent data dir."""
-    return get_active_workspace() or _AGENT_WORKDIR
+    workspace = get_active_workspace()
+    if workspace:
+        return workspace
+    pathlib.Path(_AGENT_WORKDIR).mkdir(parents=True, exist_ok=True)
+    return _AGENT_WORKDIR
 
 
 def get_mcp_manager():
@@ -318,6 +371,142 @@ _ADMIN_TOOLS = {
     "stop_served_model",
     "cancel_download",
 }
+
+
+# Legacy dispatcher branches that do not have a TOOL_HANDLERS entry.  This is
+# not an authority list: registry classification and policy still decide
+# whether they may run.  It exists solely to prove that a registry binding
+# resolves to one live runtime path before the policy engine can return allow.
+_LEGACY_BRANCH_TOOL_NAMES = frozenset(
+    {
+        "adopt_served_model",
+        "api_call",
+        "app_api",
+        "cancel_download",
+        "download_model",
+        "edit_image",
+        "list_cached_models",
+        "list_cookbook_servers",
+        "list_downloads",
+        "list_serve_presets",
+        "list_served_models",
+        "manage_calendar",
+        "manage_contact",
+        "manage_memory",
+        "manage_notes",
+        "manage_research",
+        "manage_skills",
+        "manage_tasks",
+        "query_work",
+        "manage_work",
+        "delete_work",
+        "query_gmail",
+        "manage_gmail_draft",
+        "send_gmail",
+        "modify_gmail_message",
+        "delete_gmail",
+        "download_gmail_attachment",
+        "query_google_calendar",
+        "create_google_calendar_hold",
+        "create_google_calendar_event",
+        "update_google_calendar_event",
+        "respond_google_calendar_invitation",
+        "update_google_calendar_attendees",
+        "delete_google_calendar_event",
+        "search_meetings",
+        "create_meeting",
+        "request_meeting_transcription",
+        "approve_meeting_action_item",
+        "save_meeting_knowledge",
+        "delete_meeting",
+        "query_knowledge",
+        "manage_knowledge",
+        "delete_knowledge",
+        "query_dashboard",
+        "query_automations",
+        "manage_automation",
+        "delete_automation",
+        "query_life",
+        "manage_life",
+        "delete_life",
+        "pipeline",
+        "resolve_contact",
+        "search_chats",
+        "search_hf_models",
+        "serve_model",
+        "serve_preset",
+        "stop_served_model",
+        "tail_serve_output",
+        "trigger_research",
+        "ui_control",
+    }
+)
+
+
+class RuntimeBindingKind(str, Enum):
+    LEGACY_DISPATCH = "legacy_dispatch"
+    BUILTIN_MCP = "builtin_mcp"
+    INTERNAL = "internal"
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedRuntimeBinding:
+    """Parsed registry binding used unchanged through dispatch."""
+
+    definition: ToolDefinition
+    kind: RuntimeBindingKind
+    namespace: str
+    target: str
+
+
+def _resolve_runtime_binding(
+    identity: ResolvedToolIdentity,
+) -> Optional[ResolvedRuntimeBinding]:
+    """Resolve binding metadata without importing a handler module.
+
+    The binding must name the already-resolved canonical operation exactly.
+    Actual handler presence is checked only after authorization and immediately
+    before dispatch, so denied calls cannot trigger implementation imports.
+    """
+
+    definition = identity.definition
+    parts = definition.binding.split(":")
+    if (
+        len(parts) == 2
+        and parts[0] == RuntimeBindingKind.LEGACY_DISPATCH.value
+        and parts[1] == definition.name
+    ):
+        return ResolvedRuntimeBinding(
+            definition=definition,
+            kind=RuntimeBindingKind.LEGACY_DISPATCH,
+            namespace="",
+            target=definition.name,
+        )
+    if (
+        len(parts) == 3
+        and parts[0] == RuntimeBindingKind.BUILTIN_MCP.value
+        and parts[2] == definition.name
+        and parts[1]
+    ):
+        return ResolvedRuntimeBinding(
+            definition=definition,
+            kind=RuntimeBindingKind.BUILTIN_MCP,
+            namespace=parts[1],
+            target=parts[2],
+        )
+    if (
+        len(parts) == 3
+        and parts[0] == RuntimeBindingKind.INTERNAL.value
+        and parts[2] == definition.name
+        and parts[1]
+    ):
+        return ResolvedRuntimeBinding(
+            definition=definition,
+            kind=RuntimeBindingKind.INTERNAL,
+            namespace=parts[1],
+            target=parts[2],
+        )
+    return None
 
 
 def _owner_is_admin(owner: Optional[str]) -> bool:
@@ -496,6 +685,119 @@ def _split_bg_marker(content: str):
     return False, content
 
 
+# Exact legacy runtime adapters.  These tables contain implementation
+# locations, not authority: the immutable registry decision is always made
+# first.  Keeping locations narrow prevents one resolved binding from falling
+# through unrelated handler imports or a similarly named MCP capability.
+_AGENT_HANDLER_CLASSES: Mapping[str, tuple[str, str]] = {
+    "bash": ("src.agent_tools.subprocess_tools", "BashTool"),
+    "python": ("src.agent_tools.subprocess_tools", "PythonTool"),
+    "web_search": ("src.agent_tools.web_tools", "WebSearchTool"),
+    "web_fetch": ("src.agent_tools.web_tools", "WebFetchTool"),
+    "read_file": ("src.agent_tools.filesystem_tools", "ReadFileTool"),
+    "write_file": ("src.agent_tools.filesystem_tools", "WriteFileTool"),
+    "edit_file": ("src.agent_tools.filesystem_tools", "EditFileTool"),
+    "ls": ("src.agent_tools.filesystem_tools", "LsTool"),
+    "glob": ("src.agent_tools.filesystem_tools", "GlobTool"),
+    "grep": ("src.agent_tools.filesystem_tools", "GrepTool"),
+    "get_workspace": ("src.agent_tools.filesystem_tools", "GetWorkspaceTool"),
+    "create_document": ("src.agent_tools.document_tools", "CreateDocumentTool"),
+    "update_document": ("src.agent_tools.document_tools", "UpdateDocumentTool"),
+    "edit_document": ("src.agent_tools.document_tools", "EditDocumentTool"),
+    "suggest_document": ("src.agent_tools.document_tools", "SuggestDocumentTool"),
+    "manage_documents": ("src.agent_tools.document_tools", "ManageDocumentTool"),
+    "ask_user": ("src.agent_tools.interaction_tools", "AskUserTool"),
+    "update_plan": ("src.agent_tools.interaction_tools", "UpdatePlanTool"),
+    "chat_with_model": (
+        "src.agent_tools.model_interaction_tools",
+        "ChatWithModelTool",
+    ),
+    "ask_teacher": ("src.agent_tools.model_interaction_tools", "AskTeacherTool"),
+    "list_models": ("src.agent_tools.model_interaction_tools", "ListModelsTool"),
+    "manage_bg_jobs": ("src.agent_tools.bg_job_tools", "ManageBgJobsTool"),
+    "create_session": ("src.agent_tools.session_tools", "CreateSessionTool"),
+    "list_sessions": ("src.agent_tools.session_tools", "ListSessionsTool"),
+    "send_to_session": ("src.agent_tools.session_tools", "SendToSessionTool"),
+    "manage_session": ("src.agent_tools.session_tools", "ManageSessionTool"),
+}
+
+_ADMIN_HANDLER_TARGETS = frozenset(
+    {
+        "manage_endpoints",
+        "manage_mcp",
+        "manage_webhooks",
+        "manage_tokens",
+        "manage_settings",
+    }
+)
+
+
+def _load_exact_agent_handler(tool: str):
+    """Load only the implementation declared for one exact legacy target.
+
+    Tests and extension code historically patch ``src.agent_tools``'s facade
+    registry.  Honour an already-loaded facade without importing it here;
+    otherwise resolve from the explicit module/class table.
+    """
+
+    facade = sys.modules.get("src.agent_tools")
+    handlers = getattr(facade, "TOOL_HANDLERS", None) if facade else None
+    if isinstance(handlers, Mapping) and tool in handlers:
+        return handlers[tool]
+
+    location = _AGENT_HANDLER_CLASSES.get(tool)
+    if location is not None:
+        module_name, class_name = location
+        module = importlib.import_module(module_name)
+        handler_class = getattr(module, class_name, None)
+        if handler_class is None:
+            return None
+        return handler_class().execute
+
+    if tool in _ADMIN_HANDLER_TARGETS:
+        module = importlib.import_module("src.agent_tools.admin_tools")
+        table = getattr(module, "ADMIN_TOOL_HANDLERS", {})
+        return table.get(tool) if isinstance(table, Mapping) else None
+    return None
+
+
+def _handler_context(
+    *,
+    progress_cb: Optional[Callable[[Dict], Awaitable[None]]],
+    session_id: Optional[str],
+    owner: Optional[str],
+    request_id: str,
+) -> dict[str, Any]:
+    # Never pass provider keys, OAuth secrets, database URLs, internal tokens,
+    # or the parent process's credential helpers into model-proposed code.
+    # Keep only the small set required for ordinary command execution.
+    permitted_env = {
+        key: value for key, value in os.environ.items()
+        if key in {
+            "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TEMP", "TMP",
+            "SYSTEMROOT", "WINDIR", "PATHEXT", "COMSPEC", "SSL_CERT_FILE",
+            "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+        }
+    }
+    return {
+        "progress_cb": progress_cb,
+        "subproc_env": {
+            **permitted_env,
+            "TERM": "xterm-256color",
+            "COLUMNS": "120",
+            "LINES": "40",
+            "HOME": _AGENT_WORKDIR,
+        },
+        "session_id": session_id,
+        "owner": owner,
+        "request_id": request_id,
+        "timeout_seconds": _active_tool_timeout_seconds.get(),
+        # The executor owns the wall-clock deadline. Subprocess handlers wait
+        # for cancellation and reap their process trees before returning.
+        "deadline_managed": True,
+    }
+
+
 async def _direct_fallback(
     tool: str,
     content: str,
@@ -504,26 +806,18 @@ async def _direct_fallback(
     owner: Optional[str] = None,
     request_id: str = "",
 ) -> Optional[Dict]:
-    _subproc_env = {
-        **os.environ,
-        "TERM": "xterm-256color",
-        "COLUMNS": "120",
-        "LINES": "40",
-        "HOME": _AGENT_WORKDIR,
-    }
-
     try:
-        ctx = {
-            "progress_cb": progress_cb,
-            "subproc_env": _subproc_env,
-            "session_id": session_id,
-            "owner": owner,
-            "request_id": request_id,
-        }
-
-        from src.agent_tools import TOOL_HANDLERS
-        if tool in TOOL_HANDLERS:
-            return await TOOL_HANDLERS[tool](content, ctx)
+        handler = _load_exact_agent_handler(tool)
+        if handler is not None:
+            return await handler(
+                content,
+                _handler_context(
+                    progress_cb=progress_cb,
+                    session_id=session_id,
+                    owner=owner,
+                    request_id=request_id,
+                ),
+            )
 
     except Exception as e:
         return {"error": f"{tool}: {e}", "exit_code": 1}
@@ -538,16 +832,431 @@ async def _document_tool_dispatch(
     owner: Optional[str] = None,
 ) -> Optional[Dict]:
     """Route a document tool through TOOL_HANDLERS with the right ctx shape."""
-    from src.agent_tools import TOOL_HANDLERS
-    ctx = {"session_id": session_id, "owner": owner}
-    if tool in TOOL_HANDLERS:
-        return await TOOL_HANDLERS[tool](content, ctx)
+    handler = _load_exact_agent_handler(tool)
+    if handler is not None:
+        return await handler(content, {"session_id": session_id, "owner": owner})
     return None
+
+
+_AI_DISPATCH_TARGETS = frozenset({"pipeline", "manage_memory", "ui_control"})
+
+# target -> (module, function, invocation style)
+_LEGACY_DOMAIN_BINDINGS: Mapping[str, tuple[str, str, str]] = {
+    "search_chats": ("src.tools.search", "do_search_chats", "owner"),
+    "manage_tasks": ("src.tools.system", "do_manage_tasks", "owner"),
+    "manage_skills": ("src.tools.system", "do_manage_skills", "owner"),
+    "api_call": ("src.tools.system", "do_api_call", "content"),
+    "app_api": ("src.tools.system", "do_app_api", "owner"),
+    "manage_notes": ("src.tools.notes", "do_manage_notes", "owner"),
+    "manage_calendar": ("src.tools.calendar", "do_manage_calendar", "owner"),
+    "download_model": ("src.tools.cookbook", "do_download_model", "owner"),
+    "serve_model": ("src.tools.cookbook", "do_serve_model", "owner_request"),
+    "list_served_models": (
+        "src.tools.cookbook",
+        "do_list_served_models",
+        "owner_request",
+    ),
+    "stop_served_model": ("src.tools.cookbook", "do_stop_served_model", "owner"),
+    "tail_serve_output": (
+        "src.tools.cookbook",
+        "do_tail_serve_output",
+        "owner_request",
+    ),
+    "list_downloads": ("src.tools.cookbook", "do_list_downloads", "owner"),
+    "cancel_download": ("src.tools.cookbook", "do_cancel_download", "owner"),
+    "search_hf_models": ("src.tools.cookbook", "do_search_hf_models", "owner"),
+    "list_cached_models": ("src.tools.cookbook", "do_list_cached_models", "owner"),
+    "list_serve_presets": (
+        "src.tools.cookbook",
+        "do_list_serve_presets",
+        "owner",
+    ),
+    "serve_preset": ("src.tools.cookbook", "do_serve_preset", "owner"),
+    "adopt_served_model": (
+        "src.tools.cookbook",
+        "do_adopt_served_model",
+        "owner",
+    ),
+    "list_cookbook_servers": (
+        "src.tools.cookbook",
+        "do_list_cookbook_servers",
+        "owner",
+    ),
+    "edit_image": ("src.tools.image", "do_edit_image", "owner"),
+    "trigger_research": ("src.tools.research", "do_trigger_research", "owner"),
+    "manage_research": ("src.tools.research", "do_manage_research", "owner"),
+    "resolve_contact": ("src.tools.contacts", "do_resolve_contact", "owner"),
+    "manage_contact": ("src.tools.contacts", "do_manage_contact", "owner"),
+    "query_work": ("src.tools.work", "do_query_work", "owner"),
+    "manage_work": (
+        "src.tools.work",
+        "do_manage_work",
+        "owner_request_approval",
+    ),
+    "delete_work": (
+        "src.tools.work",
+        "do_delete_work",
+        "owner_request_approval",
+    ),
+    "query_gmail": (
+        "src.tools.google_workspace",
+        "do_query_gmail",
+        "owner",
+    ),
+    "manage_gmail_draft": (
+        "src.tools.google_workspace",
+        "do_manage_gmail_draft",
+        "owner_request_approval",
+    ),
+    "send_gmail": (
+        "src.tools.google_workspace",
+        "do_send_gmail",
+        "owner_request_approval",
+    ),
+    "modify_gmail_message": (
+        "src.tools.google_workspace",
+        "do_modify_gmail_message",
+        "owner_request_approval",
+    ),
+    "delete_gmail": (
+        "src.tools.google_workspace",
+        "do_delete_gmail",
+        "owner_request_approval",
+    ),
+    "download_gmail_attachment": (
+        "src.tools.google_workspace",
+        "do_download_gmail_attachment",
+        "owner_request_approval",
+    ),
+    "query_google_calendar": (
+        "src.tools.google_workspace",
+        "do_query_google_calendar",
+        "owner",
+    ),
+    "create_google_calendar_hold": (
+        "src.tools.google_workspace",
+        "do_create_google_calendar_hold",
+        "owner_request_approval",
+    ),
+    "create_google_calendar_event": (
+        "src.tools.google_workspace",
+        "do_create_google_calendar_event",
+        "owner_request_approval",
+    ),
+    "update_google_calendar_event": (
+        "src.tools.google_workspace",
+        "do_update_google_calendar_event",
+        "owner_request_approval",
+    ),
+    "respond_google_calendar_invitation": (
+        "src.tools.google_workspace",
+        "do_respond_google_calendar_invitation",
+        "owner_request_approval",
+    ),
+    "update_google_calendar_attendees": (
+        "src.tools.google_workspace",
+        "do_update_google_calendar_attendees",
+        "owner_request_approval",
+    ),
+    "delete_google_calendar_event": (
+        "src.tools.google_workspace",
+        "do_delete_google_calendar_event",
+        "owner_request_approval",
+    ),
+    "search_meetings": ("src.tools.meetings", "do_search_meetings", "owner"),
+    "create_meeting": (
+        "src.tools.meetings", "do_create_meeting", "owner_request_approval"
+    ),
+    "request_meeting_transcription": (
+        "src.tools.meetings",
+        "do_request_meeting_transcription",
+        "owner_request_approval",
+    ),
+    "approve_meeting_action_item": (
+        "src.tools.meetings",
+        "do_approve_meeting_action_item",
+        "owner_request_approval",
+    ),
+    "save_meeting_knowledge": (
+        "src.tools.meetings",
+        "do_save_meeting_knowledge",
+        "owner_request_approval",
+    ),
+    "delete_meeting": (
+        "src.tools.meetings", "do_delete_meeting", "owner_request_approval"
+    ),
+    "query_knowledge": ("src.tools.knowledge", "do_query_knowledge", "owner"),
+    "manage_knowledge": (
+        "src.tools.knowledge", "do_manage_knowledge", "owner_request_approval"
+    ),
+    "delete_knowledge": (
+        "src.tools.knowledge", "do_delete_knowledge", "owner_request_approval"
+    ),
+    "query_dashboard": ("src.tools.dashboard", "do_query_dashboard", "owner"),
+    "query_automations": ("src.tools.automations", "do_query_automations", "owner"),
+    "manage_automation": ("src.tools.automations", "do_manage_automation", "owner_request_approval"),
+    "delete_automation": ("src.tools.automations", "do_delete_automation", "owner_request_approval"),
+    "query_life": ("src.tools.life", "do_query_life", "owner"),
+    "manage_life": ("src.tools.life", "do_manage_life", "owner_request_approval"),
+    "delete_life": ("src.tools.life", "do_delete_life", "owner_request_approval"),
+}
+
+_INTERNAL_BINDINGS: Mapping[str, tuple[str, str]] = {
+    "vault_search": ("src.tools.vault", "do_vault_search"),
+    "vault_get": ("src.tools.vault", "do_vault_get"),
+    "vault_unlock": ("src.tools.vault", "do_vault_unlock"),
+}
+
+
+def _binding_denial(
+    binding: ResolvedRuntimeBinding,
+    reason: str,
+) -> Tuple[str, Dict]:
+    definition = binding.definition
+    return f"{definition.name}: BLOCKED", {
+        "error": reason,
+        "exit_code": 1,
+        "blocked": True,
+        "policy_decision": PolicyDecisionKind.DENY.value,
+        "policy_code": "binding_dispatch_mismatch",
+        "tool_name": definition.name,
+        "tool_version": definition.version,
+        "binding_kind": binding.kind.value,
+        "binding_namespace": binding.namespace,
+        "binding_target": binding.target,
+    }
+
+
+async def _dispatch_builtin_mcp_binding(
+    binding: ResolvedRuntimeBinding,
+    content: str,
+    *,
+    owner: Optional[str],
+) -> Tuple[str, Dict]:
+    target = binding.target
+    expected_namespace = (
+        "email" if target in BUILTIN_EMAIL_TOOLS
+        else "image_gen" if target == "generate_image"
+        else None
+    )
+    if expected_namespace is None or binding.namespace != expected_namespace:
+        return _binding_denial(
+            binding,
+            "Canonical MCP binding namespace/target does not match a bundled adapter.",
+        )
+
+    mcp = get_mcp_manager()
+    if not mcp:
+        return f"{target}: failed", {
+            "error": f"MCP manager not available for '{binding.namespace}:{target}'.",
+            "exit_code": 1,
+        }
+
+    if target == "generate_image":
+        args = _build_mcp_args(target, content)
+        description = f"generate_image: {str(args.get('prompt') or '')[:80]}"
+    else:
+        args, parse_error = _parse_qualified_mcp_args(
+            f"mcp__{binding.namespace}__{target}",
+            content,
+        )
+        if parse_error:
+            return f"email: {target}", {"error": parse_error, "exit_code": 1}
+        # Copy normalized arguments before adding trusted transport metadata.
+        # Provider approval receipts can be injected at this exact boundary;
+        # model arguments can never supply the reserved owner value.
+        args = dict(args)
+        if owner:
+            args[_EMAIL_MCP_OWNER_ARG] = owner
+        description = f"email: {target}"
+
+    qualified = f"mcp__{binding.namespace}__{target}"
+    result = await mcp.call_tool(qualified, args)
+    if target == "generate_image":
+        _promote_image_fields(result)
+    return description, result
+
+
+async def _dispatch_internal_binding(
+    binding: ResolvedRuntimeBinding,
+    content: str,
+    *,
+    owner: Optional[str],
+) -> Tuple[str, Dict]:
+    location = _INTERNAL_BINDINGS.get(binding.target)
+    if binding.namespace != "vault" or location is None:
+        return _binding_denial(
+            binding,
+            "Canonical internal binding namespace/target has no exact adapter.",
+        )
+    module_name, function_name = location
+    module = importlib.import_module(module_name)
+    handler = getattr(module, function_name, None)
+    if handler is None:
+        return _binding_denial(binding, "Canonical internal handler is unavailable.")
+    return binding.target, await handler(content, owner=owner)
+
+
+async def _dispatch_legacy_binding(
+    binding: ResolvedRuntimeBinding,
+    content: str,
+    *,
+    session_id: Optional[str],
+    owner: Optional[str],
+    request_id: str,
+    progress_cb: Optional[Callable[[Dict], Awaitable[None]]],
+    approval_grant: Any = None,
+) -> Tuple[str, Dict]:
+    target = binding.target
+    if binding.namespace or target != binding.definition.name:
+        return _binding_denial(
+            binding,
+            "Legacy binding does not match its canonical target exactly.",
+        )
+
+    # Detached execution is an adapter of the canonical bash binding, not a
+    # second dispatch path discoverable by name.
+    if target == "bash" and session_id:
+        is_background, command = _split_bg_marker(content)
+        if is_background and command:
+            from src import bg_jobs
+            from src.agent_tools.subprocess_tools import validate_agent_shell
+
+            try:
+                validate_agent_shell(command)
+            except ValueError as exc:
+                return "bash: BLOCKED", {
+                    "error": f"bash: {exc}", "exit_code": 126, "blocked": True,
+                }
+
+            record = bg_jobs.launch(command, session_id=session_id, cwd=agent_cwd())
+            short = command.strip().split(chr(10))[0][:80]
+            return f"bash (background): {short}", {
+                "output": (
+                    f"Started background job `{record['id']}`. It is running detached; "
+                    "do NOT wait for it or poll it. You will be automatically re-invoked "
+                    "with its full output when it finishes."
+                ),
+                "exit_code": 0,
+                "bg_job_id": record["id"],
+            }
+
+    if target in _AGENT_HANDLER_CLASSES or target in _ADMIN_HANDLER_TARGETS:
+        result = await _direct_fallback(
+            target,
+            content,
+            progress_cb=progress_cb,
+            session_id=session_id,
+            owner=owner,
+            request_id=request_id,
+        )
+        if isinstance(result, tuple):
+            return result
+        if result is None:
+            return _binding_denial(binding, "Canonical legacy handler is unavailable.")
+        first_line = content.split(chr(10))[0].strip()[:80]
+        description = f"{target}: {first_line}" if first_line else target
+        if target == "edit_file":
+            description = result.get("output") or result.get("error") or target
+        elif target in {"edit_document", "suggest_document"} and result.get("title"):
+            description = f"{target}: {result['title']}"
+        return description, result
+
+    if target in _AI_DISPATCH_TARGETS:
+        module = importlib.import_module("src.ai_interaction")
+        dispatcher = getattr(module, "dispatch_ai_tool", None)
+        if dispatcher is None:
+            return _binding_denial(binding, "Canonical AI handler is unavailable.")
+        return await dispatcher(target, content, session_id, owner=owner)
+
+    location = _LEGACY_DOMAIN_BINDINGS.get(target)
+    if location is None:
+        return _binding_denial(binding, "Canonical legacy target has no exact adapter.")
+    module_name, function_name, invocation = location
+    # Preserve the long-standing patch/extension seam when its facade is
+    # already loaded, but never import that broad facade from the executor.
+    facade = sys.modules.get("src.tool_implementations")
+    handler = getattr(facade, function_name, None) if facade else None
+    if handler is None:
+        module = importlib.import_module(module_name)
+        handler = getattr(module, function_name, None)
+    if handler is None:
+        return _binding_denial(binding, "Canonical legacy handler is unavailable.")
+    if invocation == "content":
+        result = await handler(content)
+    elif invocation == "owner_request":
+        result = await handler(content, owner=owner, request_id=request_id)
+    elif invocation == "owner_request_approval":
+        result = await handler(
+            content,
+            owner=owner,
+            request_id=request_id,
+            approval_action_id=getattr(approval_grant, "approval_id", None),
+        )
+    else:
+        result = await handler(content, owner=owner)
+    return target, result
+
+
+async def _dispatch_resolved_binding(
+    binding: ResolvedRuntimeBinding,
+    content: str,
+    *,
+    session_id: Optional[str],
+    owner: Optional[str],
+    request_id: str,
+    progress_cb: Optional[Callable[[Dict], Awaitable[None]]],
+    approval_grant: Any = None,
+) -> Tuple[str, Dict]:
+    """Dispatch solely from the resolved immutable binding."""
+
+    if binding.kind is RuntimeBindingKind.BUILTIN_MCP:
+        return await _dispatch_builtin_mcp_binding(binding, content, owner=owner)
+    if binding.kind is RuntimeBindingKind.INTERNAL:
+        return await _dispatch_internal_binding(binding, content, owner=owner)
+    if binding.kind is RuntimeBindingKind.LEGACY_DISPATCH:
+        return await _dispatch_legacy_binding(
+            binding,
+            content,
+            session_id=session_id,
+            owner=owner,
+            request_id=request_id,
+            progress_cb=progress_cb,
+            approval_grant=approval_grant,
+        )
+    return _binding_denial(binding, "Unsupported canonical binding kind.")
 
 
 # ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
+
+async def _await_registry_deadline(
+    execution: Awaitable[Tuple[str, Dict]],
+    timeout_seconds: float,
+) -> tuple[bool, Optional[Tuple[str, Dict]]]:
+    """Await one tool call without confusing handler timeouts with ours.
+
+    ``asyncio.wait_for`` raises ``TimeoutError`` both when its own deadline
+    expires and when the wrapped handler raises that exception itself.  Using
+    ``asyncio.wait`` keeps those cases distinct and still guarantees that an
+    external cancellation cancels and reaps the owned execution task.
+    """
+
+    task = asyncio.create_task(execution)
+    try:
+        done, _ = await asyncio.wait({task}, timeout=timeout_seconds)
+    except asyncio.CancelledError:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        raise
+    if task in done:
+        return False, await task
+
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    return True, None
+
 
 async def execute_tool_block(
     block: Any,
@@ -558,6 +1267,8 @@ async def execute_tool_block(
     workspace: Optional[str] = None,
     tool_policy: Optional[Any] = None,
     request_id: str = "",
+    authority: Optional[ExecutionAuthority] = None,
+    approval_grant: Optional[Any] = None,
 ) -> Tuple[str, Dict]:
     """Execute a single tool block. Returns (description, result_dict).
 
@@ -565,22 +1276,77 @@ async def execute_tool_block(
     cwd confine to it) for the duration of this call, then delegate. Reset on the
     way out so the binding never leaks to the next tool call. ``request_id`` is
     an application-generated correlation/capability identity; callers must not
-    copy it from model arguments.
+    copy it from model arguments. ``authority`` is an immutable request value
+    constructed by the ingress; model/tool arguments can never supply scopes,
+    surface, or trust flags.
     """
-    token = _active_workspace.set(workspace or None)
+    if authority is None:
+        # Compatibility for internal/test callers. Model-originated production
+        # calls pass an explicit authority from the agent loop.
+        authority = authority_for_owner(owner, surface=ToolSurface.FENCE)
+    requested_tool = getattr(block, "tool_type", None)
+    resolved = resolve_tool_identity(requested_tool, surface=authority.surface)
+    definition = (
+        resolved.definition
+        if isinstance(resolved, ResolvedToolIdentity)
+        else None
+    )
+    timeout_seconds = (
+        float(definition.timeout_seconds)
+        if definition is not None
+        else None
+    )
+
+    workspace_token = _active_workspace.set(workspace or None)
+    timeout_token = _active_tool_timeout_seconds.set(timeout_seconds)
     try:
-        output = await _execute_tool_block_impl(
+        execution = _execute_tool_block_impl(
             block,
             session_id=session_id,
             disabled_tools=disabled_tools,
             owner=owner,
+            authority=authority,
+            approval_grant=approval_grant,
             request_id=request_id,
             progress_cb=progress_cb,
             tool_policy=tool_policy,
         )
+        # Unknown/denied identities have no executable binding and should
+        # return their policy decision directly.  Every resolved static tool,
+        # however, is bounded by its immutable ToolDefinition deadline.
+        if timeout_seconds is None:
+            return await execution
+        timed_out, output = await _await_registry_deadline(
+            execution,
+            timeout_seconds,
+        )
+        if timed_out:
+            canonical_name = definition.name
+            logger.warning(
+                "Registry timeout tool=%r version=%s timeout_seconds=%s owner=%r",
+                canonical_name,
+                definition.version,
+                timeout_seconds,
+                authority.owner,
+            )
+            return f"{canonical_name}: TIMED OUT", {
+                "error": (
+                    f"Tool '{canonical_name}' exceeded its registry timeout "
+                    f"of {timeout_seconds:g} seconds."
+                ),
+                "exit_code": 124,
+                "timed_out": True,
+                "timeout_seconds": timeout_seconds,
+                "policy_code": "tool_timeout",
+                "requested_tool": requested_tool,
+                "tool_name": canonical_name,
+                "tool_version": definition.version,
+            }
+        assert output is not None
         return output
     finally:
-        _active_workspace.reset(token)
+        _active_tool_timeout_seconds.reset(timeout_token)
+        _active_workspace.reset(workspace_token)
 
 
 async def _execute_tool_block_impl(
@@ -591,6 +1357,8 @@ async def _execute_tool_block_impl(
     progress_cb: Optional[Callable[[Dict], Awaitable[None]]] = None,
     tool_policy: Optional[Any] = None,
     request_id: str = "",
+    authority: Optional[ExecutionAuthority] = None,
+    approval_grant: Optional[Any] = None,
 ) -> Tuple[str, Dict]:
     """Execute a single tool block. Returns (description, result_dict).
 
@@ -598,45 +1366,47 @@ async def _execute_tool_block_impl(
     (bash, python) so the agent loop can emit `tool_progress` SSE
     events while the command is in flight. Ignored by other tools.
     """
-    from src.tool_implementations import (
-        do_search_chats, do_manage_tasks,
-        do_manage_skills, do_api_call, do_manage_notes,
-        do_manage_calendar,
-        do_download_model, do_serve_model, do_list_served_models, do_stop_served_model,
-        do_tail_serve_output,
-        do_list_downloads, do_cancel_download, do_search_hf_models, do_list_cached_models,
-        do_list_serve_presets, do_serve_preset, do_adopt_served_model,
-        do_list_cookbook_servers,
-        do_edit_image, do_trigger_research, do_manage_research, do_resolve_contact,
-        do_manage_contact,
-        do_vault_search, do_vault_get, do_vault_unlock,
-        do_app_api,
+    requested_tool = getattr(block, "tool_type", None)
+    content = str(getattr(block, "content", "") or "")
+    if authority is None:
+        authority = authority_for_owner(owner, surface=ToolSurface.FENCE)
+
+    identity_or_denial = resolve_tool_identity(
+        requested_tool,
+        surface=authority.surface,
     )
+    if isinstance(identity_or_denial, ToolPolicyDecision):
+        requested_label = requested_tool if isinstance(requested_tool, str) else "tool"
+        return f"{requested_label}: BLOCKED", identity_or_denial.as_result()
+    identity = identity_or_denial
 
-    # HACK:
-    # This is a temporary workaround for a circular dependency between
-    # tool_execution.py and agent_tools.__init__.py.
-    #
-    # See issue #4277:
-    # refactor(tools): Move the registry from __init__.py into a
-    # dedicated registry.py module.
-    #
-    # Do not copy this pattern elsewhere. This import should be removed
-    # once the registry refactor is completed.
-    try:
-        agent_tools_mod = __import__("src.agent_tools", fromlist=["TOOL_HANDLERS"])
-        dynamic_handlers = getattr(agent_tools_mod, "TOOL_HANDLERS", {})
-    except ImportError:
-        dynamic_handlers = {}
+    if owner is not None and owner != authority.owner:
+        denial = deny_resolved_tool(
+            identity,
+            code="authority_owner_mismatch",
+            reason="Execution authority does not belong to the supplied owner.",
+        )
+        return f"{identity.canonical_name}: BLOCKED", denial.as_result()
 
-    tool = block.tool_type
-    content = block.content
+    binding = _resolve_runtime_binding(identity)
+    if binding is None:
+        denial = deny_resolved_tool(
+            identity,
+            code="missing_binding",
+            reason=f"Tool '{identity.canonical_name}' has no valid canonical binding.",
+        )
+        return f"{identity.canonical_name}: BLOCKED", denial.as_result()
+
+    tool = identity.canonical_name
+    owner = authority.owner
 
     # The block/disable gates below must match every policy-equivalent
     # spelling of the tool name (bare email names alias their mcp__email__
     # form — see email_tool_policy_names), not just the spelling the model
     # happened to emit.
-    policy_names = email_tool_policy_names(tool)
+    policy_names = set(email_tool_policy_names(tool))
+    if isinstance(requested_tool, str):
+        policy_names.update(email_tool_policy_names(requested_tool))
 
     # Misformatted tool call detection: model put JSON inside ```python``` (or
     # similar) without naming the tool. Common with MiniMax-style outputs.
@@ -646,8 +1416,10 @@ async def _execute_tool_block_impl(
             parsed = json.loads(content.strip())
             if isinstance(parsed, dict):
                 desc = f"{tool}: misformatted tool call"
-                result = {
-                    "error": (
+                denial = deny_resolved_tool(
+                    identity,
+                    code="invalid_arguments",
+                    reason=(
                         f"You wrote a JSON object inside a ```{tool}``` block, but that's not a tool call.\n"
                         "To call a tool, use the tool name as the fence tag, e.g.\n"
                         "```resolve_contact\n"
@@ -658,298 +1430,332 @@ async def _execute_tool_block_impl(
                         "{\"to\": \"...\", \"subject\": \"...\", \"body\": \"...\"}\n"
                         "```"
                     ),
-                    "exit_code": 1,
-                }
-                return desc, result
+                )
+                return desc, denial.as_result()
         except (ValueError, TypeError):
             pass
 
     # Reject tools that the user has disabled for this request
     if disabled_tools and not policy_names.isdisjoint(disabled_tools):
-        desc = f"{tool}: BLOCKED"
-        result = {"error": f"Tool '{tool}' is disabled by user.", "exit_code": 1}
+        # Preserve the spelling presented at the ingress in the audit/UI
+        # description.  The canonical name remains in the structured result.
+        # This matters for qualified bundled aliases: callers must be able to
+        # correlate the denial with the exact capability they attempted.
+        desc = f"{identity.requested_name}: BLOCKED"
+        result = deny_resolved_tool(
+            identity,
+            code="user_disabled",
+            reason=f"Tool '{tool}' is disabled by user.",
+        ).as_result()
         logger.info(f"Tool blocked by user: {tool}")
         return desc, result
 
     if tool_policy and any(tool_policy.blocks(name) for name in policy_names):
         desc = f"{tool}: BLOCKED"
-        result = {
-            "error": f"Execution of tool '{tool}' is forbade by the active guide-only policy.",
-            "exit_code": 1,
-        }
+        result = deny_resolved_tool(
+            identity,
+            code="request_policy_denied",
+            reason=f"Execution of tool '{tool}' is forbidden by the active guide-only policy.",
+        ).as_result()
         logger.warning("Tool policy blocked tool=%s", tool)
         return desc, result
 
+    # Role gates precede argument validation.  Besides avoiding useless work,
+    # this prevents an unauthorized principal from using validation errors as
+    # a schema-discovery oracle for privileged capabilities.
     if tool in _ADMIN_TOOLS and not _owner_is_admin(owner):
-        desc = f"{tool}: BLOCKED"
-        result = {"error": f"Tool '{tool}' requires an admin user.", "exit_code": 1}
-        logger.warning("Admin tool blocked for non-admin owner=%r tool=%s", owner, tool)
-        return desc, result
-
+        result = deny_resolved_tool(
+            identity,
+            code="admin_required",
+            reason=f"Tool '{tool}' requires an admin user.",
+        ).as_result()
+        return f"{identity.requested_name}: BLOCKED", result
     if is_public_blocked_tool(tool) and not _owner_is_admin(owner):
-        desc = f"{tool}: BLOCKED"
-        result = {
-            "error": (
+        result = deny_resolved_tool(
+            identity,
+            code="role_denied",
+            reason=(
                 f"Tool '{tool}' is restricted to admin users on this deployment. "
                 "Ask an admin to perform this action or grant the needed permission."
             ),
-            "exit_code": 1,
-        }
-        logger.warning("Public tool policy blocked owner=%r tool=%s", owner, tool)
+        ).as_result()
+        return f"{identity.requested_name}: BLOCKED", result
+
+    # Normalize and validate model-produced arguments before risk policy can
+    # return either allow or approval-required. An approval must bind to the
+    # exact typed object the executor understood, never an unparsed fence body.
+    try:
+        action = build_action_envelope(
+            identity,
+            content,
+            owner=owner,
+            session_id=session_id,
+            request_id=request_id,
+            origin=authority.origin,
+        )
+    except ActionArgumentError as exc:
+        desc = f"{tool}: BLOCKED"
+        result = deny_resolved_tool(
+            identity,
+            code="invalid_arguments",
+            reason=str(exc),
+        ).as_result()
+        if exc.path:
+            result["argument_path"] = exc.path
         return desc, result
+    # From here onward dispatch sees only content deterministically rendered
+    # from the schema-validated object. This is essential for later approval
+    # replay: stored arguments, not raw model prose, are the source of truth.
+    content = action.execution_content()
 
+    # Forbidden filesystem targets are not approvable. Reject them before a
+    # Level-3 proposal is stored so the Approval Centre never asks a human to
+    # authorize an operation the confined runtime will categorically refuse.
+    if tool in {"read_file", "write_file", "edit_file"}:
+        candidate_path = action.arguments.get("path")
+        if isinstance(candidate_path, str):
+            try:
+                _resolve_tool_path(candidate_path)
+            except ValueError as exc:
+                result = deny_resolved_tool(
+                    identity,
+                    code="path_not_allowed",
+                    reason=str(exc),
+                ).as_result()
+                result["argument_path"] = "path"
+                return f"{identity.requested_name}: BLOCKED", result
 
-    # Background execution: a `bash` block whose first line is the `#!bg`
-    # marker runs DETACHED — returns a job id immediately so the chat stream
-    # isn't held open for a multi-minute install/ffmpeg/download. The always-on
-    # monitor re-invokes the agent with the full output when the job finishes.
-    if tool == "bash" and session_id:
-        _is_bg, _bg_cmd = _split_bg_marker(content)
-        if _is_bg and _bg_cmd:
-            from src import bg_jobs
-            rec = bg_jobs.launch(_bg_cmd, session_id=session_id, cwd=agent_cwd())
-            short = _bg_cmd.strip().split(chr(10))[0][:80]
-            desc = f"bash (background): {short}"
-            result = {
-                "output": (
-                    f"Started background job `{rec['id']}`. It is running detached; "
-                    f"do NOT wait for it or poll it. You will be automatically re-invoked "
-                    f"with its full output when it finishes. Continue with other work, or "
-                    f"end your turn now and resume when the result arrives. If the user "
-                    f"later asks to check progress or stop it, call the manage_bg_jobs "
-                    f"tool yourself (output or kill); do not tell them to run a tool "
-                    f"command, and do not surface raw tool syntax in your reply."
-                ),
-                "exit_code": 0,
-                "bg_job_id": rec["id"],
-            }
-            logger.info(f"Tool executed: {desc} -> bg job {rec['id']}")
-            return desc, result
+    registry_decision = evaluate_resolved_tool_policy(identity, authority=authority)
+    execution_ledger = None
+    auto_approval_grant = None
+    accepted_approval_grant = None
+    if not registry_decision.may_execute:
+        if registry_decision.kind is not PolicyDecisionKind.REQUIRE_APPROVAL:
+            return f"{tool}: BLOCKED", registry_decision.as_result()
 
-    # Native subprocess/filesystem/web tools always use their canonical local
-    # bindings.  Explicitly-qualified ``mcp__...`` calls are handled below.
-    if tool in _NATIVE_DIRECT_TOOLS:
-        first_line = content.split(chr(10))[0][:80]
-        desc = f"{tool}: {first_line}"
-        result = await _direct_fallback(tool, content, progress_cb=progress_cb) \
-            or {"error": f"{tool}: execution failed", "exit_code": 1}
-    elif tool in _MCP_TOOL_MAP:
-        first_line = content.split(chr(10))[0][:80]
-        desc = f"{tool}: {first_line}"
-        result = await _call_mcp_tool(tool, content, progress_cb=progress_cb)
-    elif tool in ("grep", "glob", "ls", "get_workspace"):
-        # Code-navigation tools — no MCP server; run the direct implementation.
-        first_line = content.split(chr(10))[0][:80]
-        desc = f"{tool}: {first_line}"
-        result = await _direct_fallback(tool, content, progress_cb=progress_cb) \
-            or {"error": f"{tool}: execution failed", "exit_code": 1}
-    elif tool == "manage_bg_jobs":
-        # Inspect/kill detached `bash` jobs; needs session_id to scope to chat.
-        desc = f"manage_bg_jobs: {content.split(chr(10))[0][:80]}"
-        result = await _direct_fallback(tool, content, session_id=session_id, owner=owner) \
-            or {"error": "manage_bg_jobs: execution failed", "exit_code": 1}
-    elif tool in ("create_document", "update_document", "edit_document",
-                  "suggest_document", "manage_documents"):
-        desc = f"{tool}: {content.split(chr(10))[0][:80]}"
-        result = await _document_tool_dispatch(tool, content, session_id, owner) \
-            or {"error": f"{tool}: execution failed", "exit_code": 1}
-        if tool in ("edit_document", "suggest_document") and "title" in (result or {}):
-            desc = f"{tool}: {result.get('title', '')}"
-    elif tool == "search_chats":
-        query = content.split("\n")[0].strip()
-        desc = f"search_chats: {query[:80]}"
-        result = await do_search_chats(query, owner=owner)
-    elif tool in ("chat_with_model", "ask_teacher", "list_models"):
-        # Migrated to the agent_tools registry (#3629): dispatched through
-        # TOOL_HANDLERS with the owner/session ctx these tools need, instead
-        # of the legacy dispatch_ai_tool elif. The impls live in
-        # src/agent_tools/model_interaction_tools.py.
-        first_line = content.split(chr(10))[0].strip()[:60]
-        desc = f"{tool}: {first_line}" if first_line else tool
-        result = await _document_tool_dispatch(tool, content, session_id, owner) \
-            or {"error": f"{tool}: execution failed", "exit_code": 1}
-    elif tool in ("create_session", "list_sessions", "send_to_session", "manage_session"):
-        # Migrated to the agent_tools registry (#3629): dispatched through
-        # TOOL_HANDLERS with the owner/session ctx these tools need. The impls
-        # live in src/agent_tools/session_tools.py.
-        first_line = content.split(chr(10))[0].strip()[:60]
-        desc = f"{tool}: {first_line}" if first_line else tool
-        result = await _document_tool_dispatch(tool, content, session_id, owner) \
-            or {"error": f"{tool}: execution failed", "exit_code": 1}
-    elif tool in ("pipeline", "manage_memory", "ui_control"):
-        from src.ai_interaction import dispatch_ai_tool
-        desc, result = await dispatch_ai_tool(tool, content, session_id, owner=owner)
-    elif tool == "manage_tasks":
-        desc = "manage_tasks"
-        result = await do_manage_tasks(content, owner=owner)
-    elif tool == "manage_skills":
-        desc = "manage_skills"
-        result = await do_manage_skills(content, owner=owner)
-    elif tool == "api_call":
-        first_line = content.split("\n")[0].strip()[:60]
-        desc = f"api_call: {first_line}"
-        result = await do_api_call(content)
-    elif tool in ("manage_endpoints", "manage_mcp", "manage_webhooks", "manage_tokens", "manage_settings"):
-        # Registry-dispatched (agent_tools.admin_tools); owner threaded for ownership/admin checks.
-        desc = tool
-        result = await _direct_fallback(tool, content, owner=owner) \
-            or {"error": f"{tool}: execution failed", "exit_code": 1}
-    elif tool == "manage_notes":
-        desc = "manage_notes"
-        result = await do_manage_notes(content, owner=owner)
-    elif tool == "manage_calendar":
-        desc = "manage_calendar"
-        result = await do_manage_calendar(content, owner=owner)
-    elif tool == "download_model":
-        desc = "download_model"
-        result = await do_download_model(content, owner=owner)
-    elif tool == "serve_model":
-        desc = "serve_model"
-        result = await do_serve_model(content, owner=owner, request_id=request_id)
-    elif tool == "list_served_models":
-        desc = "list_served_models"
-        result = await do_list_served_models(content, owner=owner, request_id=request_id)
-    elif tool == "stop_served_model":
-        desc = "stop_served_model"
-        result = await do_stop_served_model(content, owner=owner)
-    elif tool == "tail_serve_output":
-        desc = "tail_serve_output"
-        result = await do_tail_serve_output(content, owner=owner, request_id=request_id)
-    elif tool == "list_downloads":
-        desc = "list_downloads"
-        result = await do_list_downloads(content, owner=owner)
-    elif tool == "cancel_download":
-        desc = "cancel_download"
-        result = await do_cancel_download(content, owner=owner)
-    elif tool == "search_hf_models":
-        desc = "search_hf_models"
-        result = await do_search_hf_models(content, owner=owner)
-    elif tool == "list_cached_models":
-        desc = "list_cached_models"
-        result = await do_list_cached_models(content, owner=owner)
-    elif tool == "app_api":
-        desc = "app_api"
-        result = await do_app_api(content, owner=owner)
-    elif tool == "list_serve_presets":
-        desc = "list_serve_presets"
-        result = await do_list_serve_presets(content, owner=owner)
-    elif tool == "serve_preset":
-        desc = "serve_preset"
-        result = await do_serve_preset(content, owner=owner)
-    elif tool == "adopt_served_model":
-        desc = "adopt_served_model"
-        result = await do_adopt_served_model(content, owner=owner)
-    elif tool == "list_cookbook_servers":
-        desc = "list_cookbook_servers"
-        result = await do_list_cookbook_servers(content, owner=owner)
-    elif tool == "edit_image":
-        desc = "edit_image"
-        result = await do_edit_image(content, owner=owner)
-    elif tool == "edit_file":
-        result = await _direct_fallback(tool, content) or {"error": "edit failed", "exit_code": 1}
-        desc = result.get("output") or result.get("error") or "edit_file"
-    elif tool == "trigger_research":
-        desc = "trigger_research"
-        result = await do_trigger_research(content, owner=owner)
-    elif tool == "manage_research":
-        desc = "manage_research"
-        result = await do_manage_research(content, owner=owner)
-    elif tool == "resolve_contact":
-        desc = "resolve_contact"
-        result = await do_resolve_contact(content, owner=owner)
-    elif tool == "manage_contact":
-        desc = "manage_contact"
-        result = await do_manage_contact(content, owner=owner)
-    elif tool == "vault_search":
-        desc = "vault_search"
-        result = await do_vault_search(content, owner=owner)
-    elif tool == "vault_get":
-        desc = "vault_get"
-        result = await do_vault_get(content, owner=owner)
-    elif tool == "vault_unlock":
-        desc = "vault_unlock"
-        result = await do_vault_unlock(content, owner=owner)
-    elif tool in BUILTIN_EMAIL_TOOLS:
-        # Bare email tool name from fenced-block models (e.g. Ollama) — route to MCP email server.
-        # Non-admin owners never reach here: BUILTIN_EMAIL_TOOLS ⊆ NON_ADMIN_BLOCKED_TOOLS,
-        # so is_public_blocked_tool() above already rejected them.
-        mcp = get_mcp_manager()
-        qualified = f"mcp__email__{tool}"
-        desc = f"email: {tool}"
-        if mcp:
-            _raw = content.strip()
-            args = {}
-            _args_error = None
-            if _raw:
-                # A non-empty body is always meant to be the call's arguments,
-                # and every email tool takes a JSON object. Anything that
-                # isn't one is a correctable error — NOT a silent empty-args
-                # call, which would read the DEFAULT mailbox/folder instead of
-                # the one the model meant (#3966 class). Only an EMPTY body
-                # keeps the no-arg path (e.g. ```list_email_accounts```).
+        try:
+            from src.action_ledger import ApprovalGrant, get_action_ledger
+
+            execution_ledger = get_action_ledger()
+        except Exception:
+            ApprovalGrant = None  # type: ignore[assignment,misc]
+
+        if approval_grant is not None:
+            if (
+                ApprovalGrant is None
+                or not isinstance(approval_grant, ApprovalGrant)
+                or not approval_grant.matches(action)
+            ):
+                result = deny_resolved_tool(
+                    identity,
+                    code="approval_evidence_mismatch",
+                    reason="Approval evidence does not match this exact action.",
+                ).as_result()
+                return f"{tool}: BLOCKED", result
+            accepted_approval_grant = approval_grant
+        elif execution_ledger is not None and int(identity.definition.effective_risk) < 3:
+            # Exact standing rules are scoped to owner, operation/version,
+            # typed arguments, surface, and trusted origin. Level 3 is never
+            # eligible here or inside the ledger transaction.
+            auto_approval_grant = execution_ledger.claim_matching_rule(
+                action,
+                risk_level=int(identity.definition.effective_risk),
+                approval_reason=registry_decision.reason,
+                origin=action.origin.value,
+                execution_context={"workspace": get_active_workspace()},
+            )
+            if auto_approval_grant is not None and auto_approval_grant.matches(action):
+                accepted_approval_grant = auto_approval_grant
+            elif auto_approval_grant is not None:
+                logger.error(
+                    "Ledger returned mismatched standing approval id=%r tool=%r",
+                    auto_approval_grant.approval_id,
+                    tool,
+                )
                 try:
-                    parsed = json.loads(_raw)
-                except (json.JSONDecodeError, TypeError) as _je:
-                    # Covers both `{account: "work"}` (looks like JSON, bad)
-                    # and `account: work` (not JSON at all).
-                    _args_error = (
-                        f"'{tool}' arguments are not valid JSON ({_je}). "
-                        'Send a JSON object, e.g. {"account": "work"} — '
-                        "keys and string values need double quotes."
+                    # Close the ledger-owned claim without dispatching. The
+                    # nonce is consumed only to make the row terminal; it is
+                    # never treated as evidence for this mismatched action.
+                    execution_ledger.consume_grant(auto_approval_grant)
+                    execution_ledger.fail_claimed_execution(
+                        auto_approval_grant,
+                        "Standing approval evidence did not match the action.",
                     )
-                else:
-                    if isinstance(parsed, dict):
-                        args = parsed
-                    else:
-                        _args_error = (
-                            f"'{tool}' arguments must be a JSON object, "
-                            'e.g. {"uid": "..."} — got a JSON array/value instead.'
-                        )
-            if _args_error is not None:
-                result = {"error": _args_error, "exit_code": 1}
-            else:
-                if owner:
-                    args = dict(args)
-                    args[_EMAIL_MCP_OWNER_ARG] = owner
-                result = await mcp.call_tool(qualified, args)
+                except Exception:
+                    logger.exception("Could not close mismatched standing approval")
+                auto_approval_grant = None
+
+        if accepted_approval_grant is not None:
+            try:
+                if execution_ledger is None:
+                    raise RuntimeError("Approval ledger is unavailable.")
+                execution_ledger.consume_grant(accepted_approval_grant)
+            except Exception as exc:
+                logger.warning(
+                    "Approval consumption failed tool=%r approval_id=%r: %s",
+                    tool,
+                    getattr(accepted_approval_grant, "approval_id", None),
+                    exc,
+                )
+                result = deny_resolved_tool(
+                    identity,
+                    code="approval_evidence_unavailable",
+                    reason="Approval evidence is invalid, expired, or already consumed.",
+                ).as_result()
+                return f"{tool}: BLOCKED", result
         else:
-            result = {"error": "MCP manager not available", "exit_code": 1}
-    elif tool.startswith("mcp__"):
-        # MCP tool dispatch
-        mcp = get_mcp_manager()
-        if mcp:
-            desc = f"mcp: {tool}"
-            args, parse_error = _parse_qualified_mcp_args(tool, content)
-            if parse_error:
-                result = {"error": parse_error, "exit_code": 1}
-            else:
-                if tool.startswith("mcp__email__") and owner:
-                    args = dict(args)
-                    args[_EMAIL_MCP_OWNER_ARG] = owner
-                result = await mcp.call_tool(tool, args)
-        else:
-            desc = f"mcp: {tool}"
-            result = {"error": "MCP manager not available", "exit_code": 1}
+            result = registry_decision.as_result()
+            try:
+                if execution_ledger is None:
+                    raise RuntimeError("Approval ledger is unavailable.")
+                proposal = execution_ledger.propose(
+                    action,
+                    risk_level=int(identity.definition.effective_risk),
+                    approval_reason=registry_decision.reason,
+                    origin=action.origin.value,
+                    execution_context={"workspace": get_active_workspace()},
+                )
+            except Exception:
+                logger.exception("Could not persist approval proposal tool=%r", tool)
+                result.update(
+                    {
+                        "error": "Approval storage is unavailable; the action was not executed.",
+                        "policy_code": "approval_persistence_failed",
+                        "approval_required": True,
+                    }
+                )
+                return f"{tool}: APPROVAL REQUIRED", result
+            if (
+                proposal.get("tool_name") != action.tool_name
+                or proposal.get("tool_version") != action.tool_version
+                or proposal.get("arguments_hash") != action.arguments_hash
+                or proposal.get("surface") != action.surface.value
+                or proposal.get("origin") != action.origin.value
+            ):
+                result.update(
+                    {
+                        "error": (
+                            "This request id is already bound to a different action "
+                            "revision; it cannot authorize these arguments."
+                        ),
+                        "policy_code": "approval_action_mismatch",
+                        "approval_required": False,
+                        "approval_id": proposal["id"],
+                        "approval_status": proposal["status"],
+                    }
+                )
+                return f"{tool}: BLOCKED", result
+            if proposal["status"] != "pending":
+                result.update(
+                    {
+                        "error": (
+                            "This exact request already has a non-pending action "
+                            f"record ({proposal['status']}); it cannot be replayed."
+                        ),
+                        "policy_code": "approval_action_not_pending",
+                        "approval_required": False,
+                        "approval_id": proposal["id"],
+                        "approval_status": proposal["status"],
+                    }
+                )
+                return f"{tool}: BLOCKED", result
+            result.update(
+                {
+                    "approval_required": True,
+                    "approval_id": proposal["id"],
+                    "approval_status": proposal["status"],
+                    "approval_expires_at": proposal["expires_at"],
+                    "approval_revision": proposal["revision"],
+                    "approval_url": f"/approvals/{proposal['id']}",
+                    "action_preview": action.as_preview(),
+                }
+            )
+            return f"{tool}: APPROVAL REQUIRED", result
+    elif approval_grant is not None:
+        result = deny_resolved_tool(
+            identity,
+            code="unexpected_approval_evidence",
+            reason="Approval evidence was supplied for an action that does not require it.",
+        ).as_result()
+        return f"{tool}: BLOCKED", result
 
+    try:
+        verification_plan = None
+        if accepted_approval_grant is not None:
+            verification_plan = prepare_action_verification(
+                identity.definition,
+                action,
+                path_resolver=_resolve_tool_path,
+            )
+        desc, result = await _dispatch_resolved_binding(
+            binding,
+            content,
+            session_id=session_id,
+            owner=owner,
+            request_id=request_id,
+            progress_cb=progress_cb,
+            approval_grant=accepted_approval_grant,
+        )
+    except asyncio.CancelledError:
+        if auto_approval_grant is not None and execution_ledger is not None:
+            try:
+                execution_ledger.fail_claimed_execution(
+                    auto_approval_grant,
+                    "Auto-approved execution was cancelled or exceeded its timeout.",
+                )
+            except Exception:
+                logger.exception(
+                    "Could not close cancelled auto-approved action %s",
+                    auto_approval_grant.approval_id,
+                )
+        raise
+    except Exception as exc:
+        if auto_approval_grant is not None and execution_ledger is not None:
+            try:
+                execution_ledger.fail_claimed_execution(auto_approval_grant, str(exc))
+            except Exception:
+                logger.exception(
+                    "Could not close failed auto-approved action %s",
+                    auto_approval_grant.approval_id,
+                )
+        raise
 
-    elif tool in dynamic_handlers:
-        first_line = content.split(chr(10))[0][:80]
-        desc = f"registry: {tool} {first_line}".strip()
-        res = await _direct_fallback(tool, content, progress_cb=progress_cb)
+    try:
+        if verification_plan is not None:
+            outcome = verify_action_result(verification_plan, result)
+            result = result_with_verification(result, outcome)
 
-        if isinstance(res, tuple):
-            desc, result = res
-        else:
-            result = res or {"error": f"{tool}: execution failed", "exit_code": 1}
+        if auto_approval_grant is not None and execution_ledger is not None:
+            # The rule-created proposal has no route waiting to close it; the
+            # executor therefore owns its success/failure lifecycle.
+            result["auto_approved"] = True
+            result["approval_id"] = auto_approval_grant.approval_id
+            completed = execution_ledger.finish_execution(
+                auto_approval_grant,
+                result,
+                verification_status=(
+                    verification_status_from_result(result) or "indeterminate"
+                ),
+            )
+            result["approval_status"] = completed["status"]
+    except Exception as exc:
+        if auto_approval_grant is not None and execution_ledger is not None:
+            try:
+                execution_ledger.fail_claimed_execution(auto_approval_grant, str(exc))
+            except Exception:
+                logger.exception(
+                    "Could not close verification failure for auto-approved action %s",
+                    auto_approval_grant.approval_id,
+                )
+        raise
 
-    else:
-        desc = f"unknown: {tool}"
-        result = {
-            "error": f"Unknown tool: {tool}",
-            "exit_code": 1
-        }
-
-    logger.info(f"Tool executed: {desc} -> exit_code={result.get('exit_code', 'n/a')}")
+    logger.info(
+        "Tool executed via binding=%s namespace=%r target=%r -> exit_code=%s",
+        binding.kind.value,
+        binding.namespace,
+        binding.target,
+        result.get("exit_code", "n/a"),
+    )
     return desc, result
 
 

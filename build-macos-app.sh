@@ -1,173 +1,138 @@
 #!/bin/bash
-# Build a downloadable macOS launcher app + .dmg for Odysseus.
+# Build OM Automate as a native macOS application backed by WKWebView.
 #
-#   ./build-macos-app.sh
-#
-# Produces:
-#   dist/Odysseus.app   — double-click: starts the local server (using this
-#                         repo's venv) and opens the UI in an app-style window.
-#   dist/Odysseus.dmg   — drag-to-Applications disk image (the downloadable).
-#
-# This is a *launcher* wrapper: it drives the venv we set up in this repo, it
-# does not bundle Python. The install path is baked into the app at build time,
-# so rebuild if you move the repo. Override the port with ODYSSEUS_PORT.
-set -e
+# The app remains local-first: it starts this checkout's private Python service
+# through start-macos.sh and presents the UI in a native AppKit window. Python,
+# user data, and models remain outside the bundle so normal upgrades and backups
+# continue to use the existing project layout.
+# start-macos.sh installs the exact native dependency profile from
+# requirements-om.lock when the target environment is first created.
+set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP_NAME="Odysseus"
-INSTALL_DIR="$REPO_DIR"
-PORT="${ODYSSEUS_PORT:-7860}"
-DIST="$REPO_DIR/dist"
-APP="$DIST/$APP_NAME.app"
-
-echo "Building $APP_NAME.app"
-echo "  install dir: $INSTALL_DIR"
-echo "  port:        $PORT"
-
-rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-
-# ── Icon (best effort) — center-crop docs/odysseus.jpg to a square .icns ──
-if [ -f "$REPO_DIR/docs/odysseus.jpg" ] && command -v sips >/dev/null 2>&1; then
-  TMPIMG="$(mktemp -d)"
-  # Center-crop to a square, scale to 512 (sips' icns encoder caps at 512), and
-  # let sips emit the .icns directly — more robust across macOS versions than
-  # building an .iconset by hand.
-  sips -c 720 720 "$REPO_DIR/docs/odysseus.jpg" --out "$TMPIMG/sq.png" >/dev/null 2>&1 || cp "$REPO_DIR/docs/odysseus.jpg" "$TMPIMG/sq.png"
-  sips -z 512 512 "$TMPIMG/sq.png" --out "$TMPIMG/icon.png" >/dev/null 2>&1
-  if sips -s format icns "$TMPIMG/icon.png" --out "$APP/Contents/Resources/odysseus.icns" >/dev/null 2>&1; then
-    echo "  icon:        odysseus.icns"
-  else
-    echo "  icon:        (skipped — conversion failed)"
-  fi
-  rm -rf "$TMPIMG"
-else
-  echo "  icon:        (skipped — no docs/odysseus.jpg)"
+INSTALL_DIRECTORY="${OM_INSTALL_DIRECTORY:-$REPO_DIR}"
+BRAND_MANIFEST="$REPO_DIR/static/manifest.json"
+NATIVE_SOURCE="$REPO_DIR/native/macos/OMAutomateApp.m"
+APP_NAME="$(/usr/bin/plutil -extract om_automate.native_labels.application raw -o - "$BRAND_MANIFEST" 2>/dev/null)" || {
+  echo "Brand configuration is missing or invalid: $BRAND_MANIFEST" >&2
+  exit 1
+}
+if [[ ! "$APP_NAME" =~ ^[[:alnum:]][[:alnum:]_.\ -]*$ ]]; then
+  echo "Native application name is not safe for a macOS artifact: $APP_NAME" >&2
+  exit 1
 fi
 
-# ── Info.plist ──
-cat > "$APP/Contents/Info.plist" <<PLIST
+PORT="${ODYSSEUS_PORT:-${APP_PORT:-7860}}"
+DIST="$REPO_DIR/dist"
+APP="$DIST/$APP_NAME.app"
+CONTENTS="$APP/Contents"
+EXECUTABLE="$CONTENTS/MacOS/$APP_NAME"
+ICON_NAME="om-automate.icns"
+
+command -v xcrun >/dev/null 2>&1 || {
+  echo "Xcode Command Line Tools are required. Run: xcode-select --install" >&2
+  exit 1
+}
+[ -f "$NATIVE_SOURCE" ] || {
+  echo "Native application source is missing: $NATIVE_SOURCE" >&2
+  exit 1
+}
+[ -x "$REPO_DIR/start-macos.sh" ] || {
+  echo "start-macos.sh must be executable before packaging." >&2
+  exit 1
+}
+
+echo "Building native $APP_NAME.app"
+echo "  project: $REPO_DIR"
+echo "  runtime: $INSTALL_DIRECTORY"
+echo "  port:    $PORT"
+
+rm -rf "$APP"
+mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
+
+echo "  compiling AppKit + WKWebView shell"
+mkdir -p "$REPO_DIR/.build/module-cache"
+export CLANG_MODULE_CACHE_PATH="$REPO_DIR/.build/module-cache"
+xcrun clang \
+  -fobjc-arc \
+  -O2 \
+  -framework AppKit \
+  -framework WebKit \
+  "$NATIVE_SOURCE" \
+  -o "$EXECUTABLE"
+chmod 755 "$EXECUTABLE"
+
+ICON_SOURCE="$REPO_DIR/static/brand/om-icon-512.png"
+if [ -f "$ICON_SOURCE" ]; then
+  sips -s format icns "$ICON_SOURCE" --out "$CONTENTS/Resources/$ICON_NAME" >/dev/null
+  echo "  icon:     $ICON_NAME"
+fi
+
+cat > "$CONTENTS/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key>            <string>$APP_NAME</string>
-    <key>CFBundleDisplayName</key>     <string>$APP_NAME</string>
-    <key>CFBundleIdentifier</key>      <string>com.odysseus.launcher</string>
-    <key>CFBundleVersion</key>         <string>1.0</string>
-    <key>CFBundleShortVersionString</key><string>1.0</string>
-    <key>CFBundlePackageType</key>     <string>APPL</string>
-    <key>CFBundleExecutable</key>      <string>$APP_NAME</string>
-    <key>CFBundleIconFile</key>        <string>odysseus</string>
-    <key>LSMinimumSystemVersion</key>  <string>11.0</string>
-    <key>NSHighResolutionCapable</key> <true/>
-    <key>LSUIElement</key>             <false/>
+    <key>CFBundleName</key>
+    <string>$APP_NAME</string>
+    <key>CFBundleDisplayName</key>
+    <string>$APP_NAME</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.odysseus.launcher</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleExecutable</key>
+    <string>$APP_NAME</string>
+    <key>CFBundleIconFile</key>
+    <string>om-automate</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>OM Automate uses the microphone only when you choose voice input or record a meeting.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>OM Automate uses the camera only when you choose a feature that captures camera media.</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
+    <key>OMInstallDirectory</key>
+    <string>$INSTALL_DIRECTORY</string>
+    <key>OMServerPort</key>
+    <string>$PORT</string>
 </dict>
 </plist>
 PLIST
 
-# ── Launcher executable (placeholders filled below) ──
-cat > "$APP/Contents/MacOS/$APP_NAME.tmpl" <<'LAUNCHER'
-#!/bin/bash
-# Odysseus.app — start the local server and open the UI in an app window.
-INSTALL_DIR="__INSTALL_DIR__"
-PORT="__PORT__"
-URL="http://127.0.0.1:${PORT}"
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
-
-UVICORN="$INSTALL_DIR/venv/bin/uvicorn"
-LOG="$INSTALL_DIR/logs/odysseus-app.log"
-
-notify() { /usr/bin/osascript -e "display notification \"$1\" with title \"Odysseus\"" >/dev/null 2>&1; }
-die_gui() {
-  /usr/bin/osascript -e "display dialog \"$1\" with title \"Odysseus\" buttons {\"OK\"} default button 1 with icon stop" >/dev/null 2>&1
-  exit 1
-}
-
-[ -x "$UVICORN" ] || die_gui "Odysseus isn't set up yet. Open Terminal and run:
-
-cd $INSTALL_DIR
-python3.11 -m venv venv
-./venv/bin/pip install -r requirements.txt
-./venv/bin/python setup.py"
-
-# Open the UI in a chrome-less app window (Chromium browsers), else default browser.
-open_ui() {
-  local b base exe bin
-  for b in "Google Chrome" "Microsoft Edge" "Brave Browser" "Chromium"; do
-    for base in "/Applications" "$HOME/Applications"; do
-      if [ -d "$base/$b.app" ]; then
-        exe="$(/usr/bin/defaults read "$base/$b.app/Contents/Info" CFBundleExecutable 2>/dev/null)"
-        bin="$base/$b.app/Contents/MacOS/$exe"
-        if [ -x "$bin" ]; then
-          "$bin" --app="$URL" --new-window >/dev/null 2>&1 &
-          return 0
-        fi
-      fi
-    done
-  done
-  /usr/bin/open "$URL"
-}
-
-mkdir -p "$INSTALL_DIR/logs"
-
-# Already running? Just open the UI.
-if /usr/bin/curl -s -o /dev/null --max-time 2 "$URL"; then
-  open_ui
-  exit 0
-fi
-
-notify "Starting…"
-cd "$INSTALL_DIR" || die_gui "Install folder not found: $INSTALL_DIR"
-if [ "$(uname -m)" = "arm64" ]; then
-  arch -arm64 "$UVICORN" app:app --host 127.0.0.1 --port "$PORT" >>"$LOG" 2>&1 &
-else
-  "$UVICORN" app:app --host 127.0.0.1 --port "$PORT" >>"$LOG" 2>&1 &
-fi
-SERVER_PID=$!
-
-# Quitting the app stops the server it started.
-trap 'kill $SERVER_PID 2>/dev/null; exit 0' TERM INT
-
-# Wait for readiness (first run downloads an embedding model — allow ~2 min).
-READY=0
-for i in $(seq 1 120); do
-  /usr/bin/curl -s -o /dev/null --max-time 2 "$URL" && { READY=1; break; }
-  kill -0 "$SERVER_PID" 2>/dev/null || die_gui "Odysseus failed to start. Log:
-$LOG"
-  sleep 1
-done
-
-if [ "$READY" = "1" ]; then
-  open_ui
-else
-  notify "Odysseus is taking a while — open $URL once it finishes starting."
-fi
-wait "$SERVER_PID"
-LAUNCHER
-
-sed -e "s|__INSTALL_DIR__|$INSTALL_DIR|g" -e "s|__PORT__|$PORT|g" \
-    "$APP/Contents/MacOS/$APP_NAME.tmpl" > "$APP/Contents/MacOS/$APP_NAME"
-rm -f "$APP/Contents/MacOS/$APP_NAME.tmpl"
-chmod +x "$APP/Contents/MacOS/$APP_NAME"
-
-# Refresh Finder's icon cache for the new bundle.
+plutil -lint "$CONTENTS/Info.plist" >/dev/null
+codesign --force --deep --sign - "$APP" >/dev/null
 touch "$APP"
 
-# ── .dmg (drag-to-Applications) ──
-echo "Packaging dist/$APP_NAME.dmg"
-STAGE="$(mktemp -d)/dmg"
-mkdir -p "$STAGE"
-cp -R "$APP" "$STAGE/"
-ln -s /Applications "$STAGE/Applications"
-rm -f "$DIST/$APP_NAME.dmg"
-hdiutil create -volname "$APP_NAME" -srcfolder "$STAGE" -ov -format UDZO "$DIST/$APP_NAME.dmg" >/dev/null
-rm -rf "$STAGE"
+if [ "${OM_SKIP_DMG:-0}" = "1" ]; then
+  echo "Skipping DMG packaging (OM_SKIP_DMG=1)"
+else
+  echo "Packaging $APP_NAME.dmg"
+  STAGE_ROOT="$(mktemp -d)"
+  STAGE="$STAGE_ROOT/dmg"
+  mkdir -p "$STAGE"
+  cp -R "$APP" "$STAGE/"
+  ln -s /Applications "$STAGE/Applications"
+  rm -f "$DIST/$APP_NAME.dmg"
+  hdiutil create -volname "$APP_NAME" -srcfolder "$STAGE" -ov -format UDZO "$DIST/$APP_NAME.dmg" >/dev/null
+  rm -rf "$STAGE_ROOT"
+fi
 
-echo ""
+echo
 echo "Done:"
 echo "  $APP"
-echo "  $DIST/$APP_NAME.dmg"
-echo ""
-echo "Run it:        open '$APP'"
-echo "Install:       open '$DIST/$APP_NAME.dmg'  (drag Odysseus to Applications)"
+if [ "${OM_SKIP_DMG:-0}" != "1" ]; then
+  echo "  $DIST/$APP_NAME.dmg"
+fi
+echo
+echo "The app uses a native WKWebView window and does not require Chrome."

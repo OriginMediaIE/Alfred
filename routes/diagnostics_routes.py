@@ -26,8 +26,28 @@ def setup_diagnostics_routes(
         """Consolidated degraded-state report for ChromaDB, SearXNG, email,
         ntfy, and provider endpoints. Non-intrusive probes — safe to poll."""
         require_admin(request)
-        from src.service_health import collect_service_health
-        return await collect_service_health(rag_manager, memory_vector)
+        from services.operational_health import collect_operational_health
+        from src.auth_helpers import effective_user
+        from src.service_health import _rollup, collect_service_health
+
+        report = await collect_service_health(rag_manager, memory_vector)
+        # Present canonical names from the implementation specification while
+        # retaining the additional search/notification/email probes.
+        for service in report["services"]:
+            if service["name"] == "chromadb":
+                service["name"] = "vector_store"
+            elif service["name"] == "providers":
+                service["name"] = "model_provider"
+        report["services"].extend(
+            collect_operational_health(
+                request.app.state,
+                owner=effective_user(request),
+                rag_manager=rag_manager,
+                memory_vector=memory_vector,
+            )
+        )
+        report["overall"] = _rollup(report["services"])
+        return report
 
     @router.get("/api/diagnostics/logs")
     async def get_diagnostics_logs(request: Request, limit: int = 200) -> Dict[str, Any]:

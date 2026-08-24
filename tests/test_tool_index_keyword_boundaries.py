@@ -62,3 +62,14 @@ def test_find_info_online_forces_web_search_tools():
     tools = ti.get_tools_for_query("find info online about crow box designs")
     assert "web_search" in tools
     assert "web_fetch" in tools
+
+
+def test_personal_work_and_recurring_automation_intents_remain_distinct():
+    ti = _index()
+
+    personal = ti.get_tools_for_query("create a task to book the dentist")
+    assert {"query_work", "manage_work", "delete_work"} <= personal
+    assert "manage_tasks" not in personal
+
+    recurring = ti.get_tools_for_query("summarize my inbox every morning")
+    assert "manage_tasks" in recurring

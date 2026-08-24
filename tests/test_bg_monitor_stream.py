@@ -7,7 +7,10 @@ from src import bg_monitor
 
 
 def test_drain_agent_ignores_non_string_deltas(monkeypatch):
+    captured = {}
+
     async def fake_stream_agent_loop(*args, **kwargs):
+        captured.update(kwargs)
         yield 'data: {"delta": null}'
         yield 'data: {"delta": ["bad"]}'
         yield 'data: {"delta": "ok"}'
@@ -27,7 +30,10 @@ def test_drain_agent_ignores_non_string_deltas(monkeypatch):
         id="s1",
     )
 
-    full, events = asyncio.run(bg_monitor._drain_agent(sess, []))
+    auth_manager = object()
+    full, events = asyncio.run(
+        bg_monitor._drain_agent(sess, [], auth_manager=auth_manager)
+    )
 
     assert full == "ok"
     assert events == [{
@@ -37,3 +43,4 @@ def test_drain_agent_ignores_non_string_deltas(monkeypatch):
         "output": "done",
         "exit_code": None,
     }]
+    assert captured["auth_manager"] is auth_manager

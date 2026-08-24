@@ -17,6 +17,8 @@ import json
 import os
 from typing import Any, Optional
 
+from core.platform_compat import safe_chmod
+
 
 def atomic_write_json(path: str, data: Any, *, indent: Optional[int] = None) -> None:
     """Atomically persist `data` as JSON at `path`.
@@ -31,6 +33,7 @@ def atomic_write_json(path: str, data: Any, *, indent: Optional[int] = None) -> 
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
+    safe_chmod(path, 0o600)
 
 
 def atomic_write_text(path: str, text: str) -> None:
@@ -43,3 +46,4 @@ def atomic_write_text(path: str, text: str) -> None:
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
+    safe_chmod(path, 0o600)

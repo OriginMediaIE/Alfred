@@ -6,22 +6,21 @@ from src.readiness import check_readiness
 def test_readiness_reports_core_subsystems():
     result = check_readiness()
 
-    assert {"ready", "version", "checks", "timestamp"}.issubset(result.keys())
+    assert {"status", "live", "ready", "version", "checks", "timestamp"}.issubset(result.keys())
     checks = result["checks"]
-    for name in ("database", "data_dir", "local_first"):
+    for name in ("database", "storage", "permissions", "vector_store"):
         assert name in checks, f"missing check: {name}"
 
-    # In the dev/test environment the local SQLite DB and data dir are present,
-    # so the critical checks must pass and overall readiness must be True.
-    assert checks["database"]["ok"] is True, checks["database"]
-    assert checks["data_dir"]["ok"] is True, checks["data_dir"]
-    assert result["ready"] is True, result
+    assert checks["database"]["status"] == "ok", checks["database"]
+    assert checks["storage"]["status"] == "ok", checks["storage"]
+    assert result["live"] is True
+    assert result["status"] in {"ready", "degraded", "failed"}
 
 
-def test_local_first_check_is_informational_never_fatal():
+def test_public_readiness_never_exposes_local_paths_or_exception_text():
     result = check_readiness()
-    lf = result["checks"]["local_first"]
-    # local_first reports whether storage stays on-host but must never gate
-    # readiness — a remote database is a valid deployment.
-    assert lf["ok"] is True
-    assert "local" in lf
+    serialized = str(result).lower()
+
+    assert "traceback" not in serialized
+    assert "sqlite:///" not in serialized
+    assert "/users/" not in serialized

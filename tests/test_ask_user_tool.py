@@ -8,13 +8,28 @@ import asyncio
 import json
 
 from src.agent_tools import ToolBlock, TOOL_TAGS  # noqa: E402  (import first to avoid circular)
+from src.tool_authorization import ExecutionAuthority
 from src.tool_execution import execute_tool_block
 from src.tool_index import ALWAYS_AVAILABLE, BUILTIN_TOOL_DESCRIPTIONS
+from src.tool_registry import ToolSurface
 from src.tool_security import is_public_blocked_tool
 
 
-def _run(content):
-    return asyncio.run(execute_tool_block(ToolBlock("ask_user", content)))
+def _authority(*, surface=ToolSurface.FENCE):
+    return ExecutionAuthority(
+        owner="alice",
+        permissions=frozenset({"conversation.interact"}),
+        surface=surface,
+    )
+
+
+def _run(content, *, surface=ToolSurface.FENCE):
+    return asyncio.run(
+        execute_tool_block(
+            ToolBlock("ask_user", content),
+            authority=_authority(surface=surface),
+        )
+    )
 
 
 def test_valid_question_returns_ask_user_payload():
@@ -47,11 +62,12 @@ def test_multi_flag_is_carried():
     assert len(result["ask_user"]["options"]) == 3
 
 
-def test_string_options_are_accepted():
+def test_string_options_are_rejected_by_registry_schema():
     content = json.dumps({"question": "Pick one", "options": ["Yes", "No"]})
     _, result = _run(content)
-    labels = [o["label"] for o in result["ask_user"]["options"]]
-    assert labels == ["Yes", "No"]
+    assert result["policy_code"] == "invalid_arguments"
+    assert result["argument_path"] == "options.0"
+    assert "ask_user" not in result
 
 
 def test_options_are_capped_at_six():

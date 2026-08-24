@@ -631,7 +631,8 @@ async def do_list_served_models(
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(f"{_INTERNAL_BASE}/api/cookbook/tasks/status",
-                                    headers=_internal_headers())
+                                    params={"observe_only": "true"},
+                                    headers=_internal_headers(owner))
             cookbook_tasks = (resp.json() or {}).get("tasks") or []
     except Exception as e:
         logger.debug(f"cookbook tasks/status fetch failed: {e}")
@@ -650,14 +651,6 @@ async def do_list_served_models(
     for p in external:
         if p.get("pid") not in cookbook_pids:
             merged.append(p)
-
-    from src.cookbook_diagnostics import record_listed_statuses
-
-    record_listed_statuses(
-        owner=owner,
-        request_id=request_id,
-        tasks=merged,
-    )
 
     if not merged:
         return {
@@ -996,7 +989,8 @@ async def do_list_downloads(content: str, owner: Optional[str] = None) -> Dict:
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(f"{_INTERNAL_BASE}/api/cookbook/tasks/status",
-                                    headers=_internal_headers())
+                                    params={"observe_only": "true"},
+                                    headers=_internal_headers(owner))
             data = resp.json()
         tasks = [t for t in data.get("tasks", []) if (t.get("type") or "").lower() == "download"]
         if not tasks:
@@ -1048,7 +1042,7 @@ async def do_search_hf_models(content: str, owner: Optional[str] = None) -> Dict
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(f"{_INTERNAL_BASE}/api/cookbook/hf-latest",
-                                    params=params, headers=_internal_headers())
+                                    params=params, headers=_internal_headers(owner))
             data = resp.json()
         models = data.get("models") if isinstance(data, dict) else data
         if not models:
@@ -1394,7 +1388,24 @@ async def do_list_cached_models(content: str, owner: Optional[str] = None) -> Di
     except ValueError:
         return {"error": "Invalid JSON arguments", "exit_code": 1}
     raw_host = (args.get("host") or "").strip()
-    headers = _internal_headers()
+    headers = _internal_headers(owner)
+
+    # A read capability may select a saved Cookbook server, but it must not
+    # turn model text into a new SSH target, port, platform, or filesystem
+    # root. Those values are administrator-owned configuration.
+    unsupported_overrides = [
+        key
+        for key in ("model_dir", "ssh_port", "platform")
+        if str(args.get(key) or "").strip()
+    ]
+    if unsupported_overrides:
+        return {
+            "error": (
+                "Cached-model inventory only accepts configured server paths; "
+                "remove override(s): " + ", ".join(unsupported_overrides)
+            ),
+            "exit_code": 1,
+        }
 
     async def _scan_one(host_label: str, host_val: str, ssh_port: str = "",
                         platform: str = "", model_dir: str = "") -> list:
@@ -1402,19 +1413,12 @@ async def do_list_cached_models(content: str, owner: Optional[str] = None) -> Di
         p: Dict[str, str] = {}
         if host_val:
             p["host"] = host_val
-        # Caller-provided override beats per-server config beats nothing.
-        if args.get("model_dir"):
-            p["model_dir"] = args["model_dir"]
-        elif model_dir:
+        if model_dir:
             p["model_dir"] = model_dir
         if ssh_port:
             p["ssh_port"] = ssh_port
-        elif args.get("ssh_port"):
-            p["ssh_port"] = str(args["ssh_port"])
         if platform:
             p["platform"] = platform
-        elif args.get("platform"):
-            p["platform"] = args["platform"]
         try:
             async with httpx.AsyncClient(timeout=60) as client:
                 resp = await client.get(f"{_INTERNAL_BASE}/api/model/cached",
@@ -1463,14 +1467,45 @@ async def do_list_cached_models(content: str, owner: Optional[str] = None) -> Di
             return ""
 
         if raw_host:
-            host = await _resolve_cookbook_host(raw_host)
-            # Find this host's saved record so its modelDirs apply too.
-            srv = next(
-                (s for s in servers if isinstance(s, dict)
-                 and (s.get("name") == raw_host or s.get("host") == host or s.get("host") == raw_host)),
-                {},
-            )
-            models = await _scan_one(raw_host, host, model_dir=_dirs_for(srv))
+            raw_lower = raw_host.lower()
+            if raw_lower in {"local", "localhost", "this machine", "here"}:
+                srv = next(
+                    (
+                        s
+                        for s in servers
+                        if isinstance(s, dict) and not str(s.get("host") or "").strip()
+                    ),
+                    {},
+                )
+                models = await _scan_one(
+                    "local",
+                    "",
+                    model_dir=_dirs_for(srv),
+                )
+            else:
+                matches = [
+                    s
+                    for s in servers
+                    if isinstance(s, dict)
+                    and (
+                        str(s.get("name") or "").strip().lower() == raw_lower
+                        or str(s.get("host") or "").strip() == raw_host
+                    )
+                ]
+                if len(matches) != 1:
+                    return {
+                        "error": "host must name exactly one configured Cookbook server",
+                        "exit_code": 1,
+                    }
+                srv = matches[0]
+                host = str(srv.get("host") or "").strip()
+                models = await _scan_one(
+                    str(srv.get("name") or host),
+                    host,
+                    ssh_port=str(srv.get("port") or srv.get("sshPort") or ""),
+                    platform=str(srv.get("platform") or ""),
+                    model_dir=_dirs_for(srv),
+                )
         else:
             # Always include local. Local's saved record is the one with no host.
             local_srv = next((s for s in servers if isinstance(s, dict) and not (s.get("host") or "").strip()), {})

@@ -1,5 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import json
+from pathlib import Path
+
+
+with (Path(SPECPATH) / 'static' / 'manifest.json').open(encoding='utf-8') as manifest_file:
+    manifest = json.load(manifest_file)
+APP_NAME = manifest['om_automate']['native_labels']['application']
+if APP_NAME != manifest['name']:
+    raise ValueError('PWA and native application names do not match')
+
 
 a = Analysis(
     ['launcher.py'],
@@ -21,7 +31,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='Odysseus',
+    name=APP_NAME,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -41,5 +51,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='Odysseus',
+    name=APP_NAME,
 )

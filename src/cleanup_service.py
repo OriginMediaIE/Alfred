@@ -89,7 +89,15 @@ async def cleanup_old_sessions(session_manager, owner: Optional[str] = None) -> 
     Returns:
         Tuple of (number of sessions deleted, space freed in MB)
     """
-    cutoff_date = _utcnow() - timedelta(days=CleanupConfig.DELETE_AFTER_DAYS)
+    retention_days = CleanupConfig.DELETE_AFTER_DAYS
+    try:
+        from services.privacy_service import get_privacy_service
+        configured = get_privacy_service().get(owner).get("conversation_retention_days")
+        if configured is not None:
+            retention_days = int(configured)
+    except Exception:
+        logger.debug("Conversation retention preference unavailable", exc_info=True)
+    cutoff_date = _utcnow() - timedelta(days=retention_days)
     deleted_count = 0
     space_freed = 0
 
@@ -169,7 +177,15 @@ async def get_cleanup_preview(owner: Optional[str] = None) -> Dict[str, Any]:
         Dictionary containing preview information
     """
     cutoff_archive = _utcnow() - timedelta(days=CleanupConfig.ARCHIVE_AFTER_DAYS)
-    cutoff_delete = _utcnow() - timedelta(days=CleanupConfig.DELETE_AFTER_DAYS)
+    retention_days = CleanupConfig.DELETE_AFTER_DAYS
+    try:
+        from services.privacy_service import get_privacy_service
+        configured = get_privacy_service().get(owner).get("conversation_retention_days")
+        if configured is not None:
+            retention_days = int(configured)
+    except Exception:
+        logger.debug("Conversation retention preference unavailable", exc_info=True)
+    cutoff_delete = _utcnow() - timedelta(days=retention_days)
 
     sessions_to_archive = []
     sessions_to_delete = []
@@ -262,7 +278,8 @@ async def get_cleanup_preview(owner: Optional[str] = None) -> Dict[str, Any]:
         "sessions_to_archive": sessions_to_archive,
         "sessions_to_delete": sessions_to_delete,
         "preserved_sessions": preserved_sessions,
-        "estimated_space_freed_mb": round(estimated_space_freed / (1024 * 1024), 2)
+        "estimated_space_freed_mb": round(estimated_space_freed / (1024 * 1024), 2),
+        "conversation_retention_days": retention_days,
     }
 
 async def cleanup_sessions(session_manager, owner: Optional[str] = None) -> Tuple[int, int, float]:
@@ -291,3 +308,28 @@ async def cleanup_sessions(session_manager, owner: Optional[str] = None) -> Tupl
         logger.error(f"Delete operation failed: {e}")
 
     return archived_count, deleted_count, space_freed_mb
+
+
+def purge_conversations_by_retention(session_manager, owner: Optional[str], retention_days: int) -> int:
+    """Apply the owner's explicit retention deadline without heuristic preserves."""
+    from src.database import SessionLocal, Session as DbSession, ChatMessage as DbChatMessage
+    cutoff = _utcnow() - timedelta(days=int(retention_days))
+    db = SessionLocal()
+    try:
+        query = db.query(DbSession).filter(DbSession.last_accessed < cutoff)
+        query = _apply_owner_filter(query, DbSession, owner)
+        ids = [row[0] for row in query.with_entities(DbSession.id).all()]
+        if not ids:
+            return 0
+        db.query(DbChatMessage).filter(DbChatMessage.session_id.in_(ids)).delete(synchronize_session=False)
+        db.query(DbSession).filter(DbSession.id.in_(ids)).delete(synchronize_session=False)
+        db.commit()
+        for session_id in ids:
+            session_manager.sessions.pop(session_id, None)
+        session_manager.save_sessions()
+        return len(ids)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()

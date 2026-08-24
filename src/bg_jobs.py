@@ -115,7 +115,14 @@ def launch(command: str, session_id: str, cwd: Optional[str] = None,
             f"echo $? > {xp}\n",
             encoding="utf-8",
         )
-        argv = [bash, str(script_path)]
+        from src.subprocess_sandbox import sandboxed_argv
+        argv = sandboxed_argv(
+            bash,
+            [str(script_path)],
+            cwd=cwd or str(_JOBS_DIR),
+            extra_read_roots=(str(_JOBS_DIR),),
+            extra_write_roots=(str(_JOBS_DIR),),
+        )
     else:
         # Windows without any bash installed: cmd.exe wrapper. The command runs
         # in its own child .cmd so %ERRORLEVEL% is the command's real exit code.
@@ -128,7 +135,15 @@ def launch(command: str, session_id: str, cwd: Optional[str] = None,
             f'echo %ERRORLEVEL%> "{exit_path}"\r\n',
             encoding="utf-8",
         )
-        argv = [os.environ.get("ComSpec", "cmd.exe"), "/c", str(script_path)]
+        from src.subprocess_sandbox import sandboxed_argv
+        shell = os.environ.get("ComSpec", "cmd.exe")
+        argv = sandboxed_argv(
+            shell,
+            ["/c", str(script_path)],
+            cwd=cwd or str(_JOBS_DIR),
+            extra_read_roots=(str(_JOBS_DIR),),
+            extra_write_roots=(str(_JOBS_DIR),),
+        )
 
     proc = subprocess.Popen(
         argv,

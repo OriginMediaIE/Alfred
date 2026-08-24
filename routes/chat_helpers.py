@@ -433,7 +433,15 @@ def add_user_message(sess, chat_handler, preprocessed: PreprocessedMessage, inco
     In incognito mode, still add to in-memory history (for conversation context)
     but skip session name update (which would persist)."""
     user_meta = {"attachments": preprocessed.attachment_meta} if preprocessed.attachment_meta else None
-    sess.add_message(ChatMessage("user", preprocessed.user_content, metadata=user_meta))
+    message = ChatMessage("user", preprocessed.user_content, metadata=user_meta)
+    if incognito:
+        # Session.add_message delegates to the global SessionManager and writes
+        # SQLite immediately. Incognito must never touch persistence, even
+        # transiently, so append only to this request's in-memory history.
+        sess.history.append(message)
+        sess.message_count = len(sess.history)
+    else:
+        sess.add_message(message)
     if not incognito:
         chat_handler.update_session_name_if_needed(sess, preprocessed.text_for_context)
 
@@ -969,13 +977,7 @@ def _extract_thinking_meta(text: str) -> dict | None:
     if think_match:
         thinking = think_match.group(1).strip()
         reply = think_match.group(2).strip()
-        # Only strip the thinking out into metadata when there's an actual reply
-        # left over. If reply is empty (model hit max_tokens inside <think>, or
-        # the turn was reasoning-only), keep the raw text as content — otherwise
-        # the saved message has empty content and the bubble looks blank on
-        # reload. The renderer's processWithThinking still extracts the <think>
-        # block visually at display time, so nothing changes for the normal case.
-        if thinking and reply:
+        if thinking:
             return {"thinking": thinking, "reply": reply, "time": think_time}
 
     # Detect Thinking Process: or Gemma-style reasoning
@@ -985,7 +987,7 @@ def _extract_thinking_meta(text: str) -> dict | None:
         if think_match2:
             thinking = think_match2.group(1).strip()
             reply = think_match2.group(2).strip()
-            if thinking and reply:
+            if thinking:
                 return {"thinking": thinking, "reply": reply, "time": think_time}
 
     if normalized_changed and text.strip() and text.strip() != original_text.strip():
@@ -995,15 +997,20 @@ def _extract_thinking_meta(text: str) -> dict | None:
 
 
 def clean_thinking_for_save(content: str, metadata: dict | None = None) -> tuple[str, dict]:
-    """Extract thinking from content into metadata. Use for save paths that bypass save_assistant_response."""
+    """Strip private model reasoning and retain only a user-safe status summary."""
     md = dict(metadata) if metadata else {}
+    md.pop("thinking", None)
     info = _extract_thinking_meta(content)
     if info:
         if info.get("thinking"):
-            md["thinking"] = info["thinking"]
+            md["reasoning_summary"] = "Model reasoning completed; private chain-of-thought is not displayed."
         if info.get("time"):
             md["thinking_time"] = info["time"]
-        return info["reply"], md
+        return (
+            info["reply"]
+            or "Model reasoning ended without a visible answer.",
+            md,
+        )
     return content, md
 
 
@@ -1025,6 +1032,7 @@ def save_assistant_response(
 ):
     """Add assistant response to session history. In incognito mode, keeps in-memory context but skips DB persistence."""
     md = dict(last_metrics) if last_metrics else {}
+    md.pop("thinking", None)
     def _model_value(value) -> str:
         if value is None:
             return ""
@@ -1057,13 +1065,18 @@ def save_assistant_response(
     _think_info = _extract_thinking_meta(full_response)
     if _think_info:
         if _think_info.get("thinking"):
-            md["thinking"] = _think_info["thinking"]
+            md["reasoning_summary"] = "Model reasoning completed; private chain-of-thought is not displayed."
         if _think_info.get("time"):
             md["thinking_time"] = _think_info.get("time")
         _content = _think_info["reply"]
     else:
         _content = full_response
-    sess.add_message(ChatMessage("assistant", _content, metadata=md))
+    message = ChatMessage("assistant", _content, metadata=md)
+    if incognito:
+        sess.history.append(message)
+        sess.message_count = len(sess.history)
+    else:
+        sess.add_message(message)
 
     if not incognito:
         from core.database import update_session_last_accessed

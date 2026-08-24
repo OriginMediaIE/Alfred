@@ -7,6 +7,8 @@ import secrets
 from fastapi import HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
+from starlette.responses import JSONResponse
+from urllib.parse import urlsplit
 
 
 # Per-process token that lets the in-app tool layer hit admin-gated
@@ -124,3 +126,26 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 "frame-ancestors 'none'"
             )
         return response
+
+
+class CookieCSRFMiddleware(BaseHTTPMiddleware):
+    """Origin/fetch-metadata defence for cookie-authenticated mutations."""
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        if request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"} and request.cookies.get("odysseus_session"):
+            fetch_site = (request.headers.get("sec-fetch-site") or "").lower()
+            if fetch_site in {"cross-site", "none"}:
+                return JSONResponse({"detail": "Cross-site request rejected"}, status_code=403)
+            origin = request.headers.get("origin")
+            if origin:
+                try:
+                    parsed = urlsplit(origin)
+                    origin_host = (parsed.hostname or "").lower()
+                    request_host = (request.url.hostname or "").lower()
+                    origin_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+                    request_port = request.url.port or (443 if request.url.scheme == "https" else 80)
+                    if parsed.scheme not in {"http", "https"} or origin_host != request_host or origin_port != request_port:
+                        return JSONResponse({"detail": "Origin validation failed"}, status_code=403)
+                except (TypeError, ValueError):
+                    return JSONResponse({"detail": "Origin validation failed"}, status_code=403)
+        return await call_next(request)

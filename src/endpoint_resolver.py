@@ -16,6 +16,31 @@ from src.llm_core import _detect_provider, _host_match, _is_kimi_code_url, KIMI_
 
 logger = logging.getLogger(__name__)
 
+
+def _privacy_filter_endpoint(owner, result):
+    """Remove remote invocation targets when this owner selected local-only mode."""
+    url, model, headers = result
+    if not url:
+        return result
+    try:
+        from services.privacy_service import get_privacy_service
+        get_privacy_service().ensure_local_endpoint(owner, url, purpose="model request")
+    except ImportError:
+        return result
+    except Exception as exc:
+        from services.privacy_service import PrivacyError
+        if isinstance(exc, PrivacyError):
+            logger.info("Endpoint blocked by owner local-only policy: %s", setting_safe_url(url))
+            return None, None, None
+        logger.debug("Privacy endpoint policy unavailable", exc_info=True)
+    return result
+
+
+def setting_safe_url(url: str) -> str:
+    """Return a host-only value suitable for privacy-routing logs."""
+    parsed = urlparse(str(url or ""))
+    return parsed.hostname or "configured endpoint"
+
 # Model-name substrings that are NOT chat/generation models. When an endpoint
 # has no explicit model configured we pick the first CHAT model from its list —
 # never an embedding/tts/etc. (an OpenAI-style endpoint often lists
@@ -296,7 +321,7 @@ def build_headers(api_key: Optional[str], base: str) -> Dict[str, str]:
         headers["Authorization"] = f"Bearer {api_key}"
     if provider == "openrouter":
         headers.setdefault("HTTP-Referer", "https://github.com/pewdiepie-archdaemon/odysseus")
-        headers.setdefault("X-OpenRouter-Title", "Odysseus")
+        headers.setdefault("X-OpenRouter-Title", "OM Automate")
     if _is_kimi_code_url(base):
         headers.setdefault("User-Agent", KIMI_CODE_USER_AGENT)
     return headers
@@ -325,7 +350,7 @@ def resolve_endpoint(
         from src.settings import get_user_setting, load_settings
         settings = load_settings()
     except Exception:
-        return fallback_url, fallback_model, fallback_headers
+        return _privacy_filter_endpoint(owner, (fallback_url, fallback_model, fallback_headers))
 
     owner_str = owner or ""
     def _stg(key: str) -> str:
@@ -344,7 +369,7 @@ def resolve_endpoint(
     # This prevents background tasks from jumping to the global default_model
     # when the user is mid-conversation with a different model.
     if not ep_id and fallback_url and fallback_model:
-        return fallback_url, fallback_model, fallback_headers
+        return _privacy_filter_endpoint(owner, (fallback_url, fallback_model, fallback_headers))
 
     # Unset Utility (or anything else that didn't have a fallback) means "same as Default Chat Model".
     if not ep_id:
@@ -352,7 +377,7 @@ def resolve_endpoint(
         model = _stg("default_model")
 
     if not ep_id:
-        return fallback_url, fallback_model, fallback_headers
+        return _privacy_filter_endpoint(owner, (fallback_url, fallback_model, fallback_headers))
 
     db = SessionLocal()
     try:
@@ -366,13 +391,13 @@ def resolve_endpoint(
         else:
             ep = ep.first()
         if not ep:
-            return fallback_url, fallback_model, fallback_headers
+            return _privacy_filter_endpoint(owner, (fallback_url, fallback_model, fallback_headers))
 
         try:
             base, api_key = resolve_endpoint_runtime(ep, owner=owner)
         except Exception as e:
             logger.warning("Could not resolve endpoint runtime credentials: %s", e)
-            return fallback_url, fallback_model, fallback_headers
+            return _privacy_filter_endpoint(owner, (fallback_url, fallback_model, fallback_headers))
         chat_url = build_chat_url(base)
         headers = build_headers(api_key, base)
 
@@ -388,10 +413,10 @@ def resolve_endpoint(
         if not model and not fallback_model:
             logger.warning('[resolve_endpoint] no usable model (all models hidden or list empty)')
 
-        return chat_url, model or fallback_model, headers
+        return _privacy_filter_endpoint(owner, (chat_url, model or fallback_model, headers))
     except Exception as e:
         logger.debug(f"Could not resolve {setting_prefix} endpoint: {e}")
-        return fallback_url, fallback_model, fallback_headers
+        return _privacy_filter_endpoint(owner, (fallback_url, fallback_model, fallback_headers))
     finally:
         db.close()
 
@@ -434,7 +459,8 @@ def resolve_endpoint_by_id(
             m = _first_chat_model(_endpoint_enabled_models(ep)) or ""
         if not m:
             return None
-        return chat_url, m, headers
+        filtered = _privacy_filter_endpoint(owner, (chat_url, m, headers))
+        return filtered if filtered[0] else None
     except Exception as e:
         logger.debug(f"Could not resolve endpoint {ep_id}: {e}")
         return None

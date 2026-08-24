@@ -25,11 +25,12 @@ POLL_INTERVAL_S = 5
 _FOLLOWUP_MAX_ROUNDS = 12
 
 
-async def _drain_agent(sess, messages):
+async def _drain_agent(sess, messages, auth_manager=None):
     """Run the agent loop headless against a session. Returns
     (final_prose, tool_events) — tool_events in the same shape the live chat
     saves, so the frontend rebuilds them as standard agent-thread tool cards."""
     from src.agent_loop import stream_agent_loop
+    from src.tool_authorization import ExecutionOrigin
     full = ""
     tool_events = []
     round_num = 1
@@ -40,6 +41,8 @@ async def _drain_agent(sess, messages):
         session_id=sess.id,
         max_rounds=_FOLLOWUP_MAX_ROUNDS,
         owner=getattr(sess, "owner", None),
+        auth_manager=auth_manager,
+        execution_origin=ExecutionOrigin.BACKGROUND_MONITOR,
     ):
         if not chunk.startswith("data: "):
             continue
@@ -72,7 +75,7 @@ async def _drain_agent(sess, messages):
     return full, tool_events
 
 
-async def _run_followup(rec: dict) -> bool:
+async def _run_followup(rec: dict, auth_manager=None) -> bool:
     """Re-invoke the agent in the job's session with the result. Returns True
     if the follow-up completed (or there's nothing to do) — i.e. it's safe to
     mark followed_up. Returns False to retry on the next tick."""
@@ -110,7 +113,7 @@ async def _run_followup(rec: dict) -> bool:
     context = sess.get_context_messages()
     context.append({"role": "user", "content": inject})
 
-    full, tool_events = await _drain_agent(sess, context)
+    full, tool_events = await _drain_agent(sess, context, auth_manager=auth_manager)
 
     # Persist ONLY the assistant continuation so it renders as a normal agent
     # turn — a standard chat bubble plus `tool_events` that the frontend
@@ -132,12 +135,12 @@ async def _run_followup(rec: dict) -> bool:
     return True
 
 
-async def _loop():
+async def _loop(auth_manager=None):
     while True:
         try:
             for rec in bg_jobs.pending_followups():
                 try:
-                    if await _run_followup(rec):
+                    if await _run_followup(rec, auth_manager=auth_manager):
                         bg_jobs.mark_followed_up(rec["id"])
                 except Exception as e:
                     # Idempotent: leave followed_up=False so the next tick retries.
@@ -147,11 +150,11 @@ async def _loop():
         await asyncio.sleep(POLL_INTERVAL_S)
 
 
-def start_bg_monitor():
+def start_bg_monitor(auth_manager=None):
     """Idempotent — start the always-on background-job monitor."""
     global _monitor_task
     if _monitor_task and not _monitor_task.done():
         return _monitor_task
-    _monitor_task = asyncio.create_task(_loop())
+    _monitor_task = asyncio.create_task(_loop(auth_manager=auth_manager))
     logger.info("Background-job monitor started (poll %ds)", POLL_INTERVAL_S)
     return _monitor_task

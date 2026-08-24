@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import uuid
 from datetime import datetime
 from typing import Optional
 
@@ -30,17 +31,22 @@ def get_task_scheduler():
     return _task_scheduler
 
 
-def fire_event(event_name: str, owner: Optional[str] = None):
+def fire_event(
+    event_name: str,
+    owner: Optional[str] = None,
+    payload: Optional[dict] = None,
+    dedupe_key: Optional[str] = None,
+):
     """Fire an event — increments counters and triggers tasks that hit threshold.
 
     Safe to call from both sync and async contexts.
     """
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(_handle_event(event_name, owner))
+        loop.create_task(_handle_event(event_name, owner, payload, dedupe_key))
     except RuntimeError:
         # No running loop — run in a new one (shouldn't happen in FastAPI)
-        asyncio.run(_handle_event(event_name, owner))
+        asyncio.run(_handle_event(event_name, owner, payload, dedupe_key))
 
 
 def _resolve_event_owner(owner: Optional[str]) -> Optional[str]:
@@ -69,7 +75,12 @@ def _resolve_event_owner(owner: Optional[str]) -> Optional[str]:
     return None
 
 
-async def _handle_event(event_name: str, owner: Optional[str] = None):
+async def _handle_event(
+    event_name: str,
+    owner: Optional[str] = None,
+    payload: Optional[dict] = None,
+    dedupe_key: Optional[str] = None,
+):
     """Process an event: increment counters, fire tasks that hit their threshold."""
     from core.database import SessionLocal, ScheduledTask
 
@@ -87,9 +98,6 @@ async def _handle_event(event_name: str, owner: Optional[str] = None):
             filters.append(ScheduledTask.owner == None)  # noqa: E711
 
         tasks = db.query(ScheduledTask).filter(*filters).all()
-        if not tasks:
-            return
-
         for task in tasks:
             threshold = task.trigger_count or 1
             task.trigger_counter = (task.trigger_counter or 0) + 1
@@ -117,3 +125,23 @@ async def _handle_event(event_name: str, owner: Optional[str] = None):
         logger.exception(f"Error handling event '{event_name}'")
     finally:
         db.close()
+
+    structured_event = {
+        "email_received": "new_email",
+        "document_created": "file_added",
+        "meeting_completed": "meeting_completed",
+        "task_due": "task_due",
+        "calendar_before_event": "calendar_before_event",
+        "integration_event": "integration_event",
+    }.get(event_name)
+    if structured_event:
+        try:
+            from services.automation_service import get_automation_service
+            await get_automation_service().emit(
+                resolved_owner,
+                structured_event,
+                dict(payload or {"event": {"name": event_name}}),
+                dedupe_key=dedupe_key or uuid.uuid4().hex,
+            )
+        except Exception:
+            logger.exception("Structured automation event dispatch failed for %s", event_name)

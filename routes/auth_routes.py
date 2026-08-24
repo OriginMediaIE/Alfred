@@ -81,6 +81,10 @@ class SetAdminRequest(BaseModel):
 class SetOpenRegistrationRequest(BaseModel):
     enabled: bool
 
+
+class ResetPasswordRequest(BaseModel):
+    new_password: str
+
 SESSION_COOKIE = "odysseus_session"
 
 
@@ -95,9 +99,15 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
         token = request.cookies.get(SESSION_COOKIE)
         return auth_manager.get_username_for_token(token)
 
+    def _client_ip(request: Request) -> str:
+        client = getattr(request, "client", None)
+        return str(getattr(client, "host", "unknown") or "unknown")
+
     @router.post("/setup")
     async def first_run_setup(body: SetupRequest, request: Request):
-        """Create initial admin account. Only works if no accounts exist."""
+        """Create initial admin account. Only works on a genuinely absent store."""
+        if getattr(auth_manager, "recovery_required", False):
+            raise HTTPException(503, detail={"code":"auth_recovery_required","message":"The authentication store is unreadable or corrupt. Restore it from a verified backup or use the documented local recovery procedure."})
         if not _setup_limiter.check(request.client.host):
             raise HTTPException(429, "Too many requests — try again later")
         if auth_manager.is_configured:
@@ -111,6 +121,7 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
         ok = await asyncio.to_thread(auth_manager.setup, body.username, body.password)
         if not ok:
             raise HTTPException(500, "Setup failed")
+        auth_manager.append_auth_audit("admin_created", actor=body.username.lower(), target=body.username.lower(), ip=_client_ip(request))
         return {"ok": True, "message": "Admin account created"}
 
     @router.post("/signup")
@@ -131,6 +142,7 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
         ok = await asyncio.to_thread(auth_manager.create_user, body.username, body.password, is_admin=False)
         if not ok:
             raise HTTPException(409, "Username already taken")
+        auth_manager.append_auth_audit("registration", actor=body.username.lower(), target=body.username.lower(), ip=_client_ip(request))
         return {"ok": True, "message": "Account created"}
 
     @router.post("/login")
@@ -139,7 +151,12 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
             raise HTTPException(429, "Too many requests — try again later")
         # Verify password first
         username = body.username.strip().lower()
+        if not auth_manager.login_allowed(username):
+            auth_manager.append_auth_audit("login_blocked", target=username, ip=_client_ip(request))
+            raise HTTPException(429, "Too many failed attempts — try again later")
         if not await asyncio.to_thread(auth_manager.verify_password, username, body.password):
+            locked = auth_manager.record_login_failure(username)
+            auth_manager.append_auth_audit("login_failed", target=username, ip=_client_ip(request), details={"locked": locked})
             raise HTTPException(401, "Invalid credentials")
         # Check 2FA if enabled
         if auth_manager.totp_enabled(username):
@@ -147,11 +164,17 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
                 # Password OK but need TOTP — tell client to show code input
                 return {"ok": False, "requires_totp": True, "username": username}
             if not auth_manager.totp_verify(username, body.totp_code):
+                locked = auth_manager.record_login_failure(username)
+                auth_manager.append_auth_audit("login_failed_2fa", target=username, ip=_client_ip(request), details={"locked": locked})
                 raise HTTPException(401, "Invalid 2FA code")
         # All checks passed — create session (password already verified above)
         token = await asyncio.to_thread(auth_manager.create_session_trusted, username)
         if not token:
             raise HTTPException(401, "Invalid credentials")
+        auth_manager.record_login_success(username)
+        headers = getattr(request, "headers", {}) or {}
+        auth_manager.annotate_session(token, user_agent=headers.get("user-agent", ""), ip=_client_ip(request))
+        auth_manager.append_auth_audit("login_succeeded", actor=username, target=username, ip=_client_ip(request))
         cookie_kwargs = dict(
             key=SESSION_COOKIE,
             value=token,
@@ -168,8 +191,10 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
     @router.post("/logout")
     async def logout(request: Request, response: Response):
         token = request.cookies.get(SESSION_COOKIE)
+        user = _get_current_user(request) or ""
         if token:
             auth_manager.revoke_token(token)
+        auth_manager.append_auth_audit("logout", actor=user, ip=_client_ip(request))
         response.delete_cookie(SESSION_COOKIE, path="/")
         return {"ok": True}
 
@@ -178,6 +203,9 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
         token = request.cookies.get(SESSION_COOKIE)
         result = auth_manager.status(token)
         result["signup_enabled"] = auth_manager.signup_enabled
+        result["internal_test_defaults"] = (
+            os.getenv("OM_AUTOMATE_INTERNAL_TEST_DEFAULTS", "").strip() == "1"
+        )
         # Include the caller's effective privileges so the frontend can
         # hide / dim UI controls the user isn't allowed to use. Admins get
         # ADMIN_PRIVILEGES (everything on), regular users get their stored
@@ -207,7 +235,30 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
         if not ok:
             raise HTTPException(400, "Current password is incorrect")
         await asyncio.to_thread(auth_manager.revoke_user_sessions, user, current_token)
+        auth_manager.append_auth_audit("password_changed", actor=user, target=user, ip=_client_ip(request))
         return {"ok": True}
+
+    @router.get("/sessions")
+    async def list_login_sessions(request: Request):
+        user = _get_current_user(request)
+        if not user:
+            raise HTTPException(401, "Not authenticated")
+        token = request.cookies.get(SESSION_COOKIE)
+        return {"sessions": auth_manager.list_user_sessions(user, token)}
+
+    @router.delete("/sessions/{session_id}")
+    async def revoke_login_session(session_id: str, request: Request, response: Response):
+        user = _get_current_user(request)
+        if not user:
+            raise HTTPException(401, "Not authenticated")
+        sessions = auth_manager.list_user_sessions(user, request.cookies.get(SESSION_COOKIE))
+        target = next((item for item in sessions if item["id"] == session_id), None)
+        if not target or not auth_manager.revoke_user_session_id(user, session_id):
+            raise HTTPException(404, "Session not found")
+        if target.get("current"):
+            response.delete_cookie(SESSION_COOKIE, path="/")
+        auth_manager.append_auth_audit("session_revoked", actor=user, target=user, ip=_client_ip(request), details={"session_id": session_id})
+        return {"ok": True, "current": bool(target.get("current"))}
 
     # ------------------------------------------------------------------
     # Two-factor authentication
@@ -290,7 +341,27 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
         ok = auth_manager.create_user(body.username, body.password, body.is_admin)
         if not ok:
             raise HTTPException(409, "Username already taken")
+        auth_manager.append_auth_audit("user_created", actor=user, target=body.username.lower(), ip=_client_ip(request), details={"is_admin": body.is_admin})
         return {"ok": True}
+
+    @router.post("/users/{username}/reset-password")
+    async def admin_reset_password(username: str, body: ResetPasswordRequest, request: Request):
+        user = _get_current_user(request)
+        if not user or not auth_manager.is_admin(user):
+            raise HTTPException(403, "Admin only")
+        if len(body.new_password) < PASSWORD_MIN_LENGTH:
+            raise HTTPException(400, f"Password must be at least {PASSWORD_MIN_LENGTH} characters")
+        if not await asyncio.to_thread(auth_manager.reset_password, username, body.new_password, user):
+            raise HTTPException(404, "User not found")
+        auth_manager.append_auth_audit("password_reset_by_admin", actor=user, target=username.lower(), ip=_client_ip(request))
+        return {"ok": True}
+
+    @router.get("/audit")
+    async def auth_audit(request: Request, limit: int = 200):
+        user = _get_current_user(request)
+        if not user or not auth_manager.is_admin(user):
+            raise HTTPException(403, "Admin only")
+        return {"events": auth_manager.list_auth_audit(limit)}
 
     @router.put("/users/{username}/privileges")
     async def update_user_privileges(username: str, request: Request):
@@ -760,7 +831,7 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
             api_key = integ.get("api_key", "")
             auth_type = (integ.get("auth_type") or "none").lower()
             headers = {
-                "Title": "Odysseus connectivity test",
+                "Title": "OM Automate connectivity test",
                 "Tags": "white_check_mark",
                 "Priority": "default",
             }
@@ -773,7 +844,7 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
                 async with httpx.AsyncClient(timeout=8.0) as client:
                     r = await client.post(
                         full_url,
-                        content="Connectivity test from Odysseus. If you see this on your phone, ntfy is wired up correctly.",
+                        content="Connectivity test from OM Automate. If you see this on your phone, ntfy is wired up correctly.",
                         headers=headers,
                     )
                 if r.is_success:
@@ -804,7 +875,7 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
                 return {"ok": False, "message": "No webhook URL set — paste the full Discord webhook URL into the Base URL field."}
             payload = {
                 "embeds": [{
-                    "title": "Odysseus connectivity test",
+                    "title": "OM Automate connectivity test",
                     "description": "If you see this, your Discord Webhook integration is wired up correctly.",
                     "color": 5793266,
                 }]

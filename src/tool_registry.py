@@ -146,6 +146,7 @@ class ToolDefinition:
     presentation: ToolPresentation
     binding: str
     surfaces: frozenset[ToolSurface]
+    version: int = 1
     migration_state: MigrationState = MigrationState.TYPED
 
     def __post_init__(self) -> None:
@@ -337,6 +338,12 @@ class ToolRegistry:
             raise RegistryValidationError(f"{name}: invalid timeout")
         if not definition.binding.strip():
             raise RegistryValidationError(f"{name}: missing binding")
+        if (
+            isinstance(definition.version, bool)
+            or not isinstance(definition.version, int)
+            or definition.version < 1
+        ):
+            raise RegistryValidationError(f"{name}: invalid version")
         if ToolSurface.INTERNAL not in definition.surfaces:
             raise RegistryValidationError(f"{name}: missing internal surface")
         if not definition.audit_fields:
@@ -542,6 +549,38 @@ _FENCE_TOOL_NAMES = frozenset(
         "trigger_research",
         "manage_research",
         "app_api",
+        "query_work",
+        "manage_work",
+        "delete_work",
+        "query_gmail",
+        "manage_gmail_draft",
+        "send_gmail",
+        "modify_gmail_message",
+        "delete_gmail",
+        "download_gmail_attachment",
+        "query_google_calendar",
+        "create_google_calendar_hold",
+        "create_google_calendar_event",
+        "update_google_calendar_event",
+        "respond_google_calendar_invitation",
+        "update_google_calendar_attendees",
+        "delete_google_calendar_event",
+        "search_meetings",
+        "create_meeting",
+        "request_meeting_transcription",
+        "approve_meeting_action_item",
+        "save_meeting_knowledge",
+        "delete_meeting",
+        "query_knowledge",
+        "manage_knowledge",
+        "delete_knowledge",
+        "query_dashboard",
+        "query_automations",
+        "manage_automation",
+        "delete_automation",
+        "query_life",
+        "manage_life",
+        "delete_life",
     }
 )
 
@@ -556,12 +595,10 @@ TOOL_TAGS = _FENCE_TOOL_NAMES | BUILTIN_EMAIL_TOOLS
 BUILTIN_TOOL_NAMES = TOOL_TAGS | INTERNAL_ONLY_TOOL_NAMES
 
 
-# Compatibility-locked plan-mode exposure.  This is intentionally explicit
-# rather than inferred from registry risk while policy migration is incomplete:
-# sixteen currently read-only tools still carry LEGACY_UNCLASSIFIED metadata,
-# while the typed diagnostics tool is deliberately excluded because its runtime
-# ownership checks are not implemented yet.  Consumers must fail closed by
-# subtracting this set from the complete canonical inventory.
+# Compatibility-locked plan-mode exposure.  This remains explicit rather than
+# inferred from registry risk: plan mode intentionally excludes scoped
+# diagnostics even though diagnostics is a typed read.  Consumers must fail
+# closed by subtracting this set from the complete canonical inventory.
 PLAN_MODE_ALLOWED_TOOL_NAMES = frozenset(
     {
         "read_file",
@@ -585,8 +622,14 @@ PLAN_MODE_ALLOWED_TOOL_NAMES = frozenset(
         "list_serve_presets",
         "list_cookbook_servers",
         "resolve_contact",
-        "chat_with_model",
-        "ask_teacher",
+        "query_work",
+        "query_gmail",
+        "query_google_calendar",
+        "search_meetings",
+        "query_knowledge",
+        "query_dashboard",
+        "query_automations",
+        "query_life",
     }
 )
 
@@ -594,25 +637,11 @@ if not PLAN_MODE_ALLOWED_TOOL_NAMES <= BUILTIN_TOOL_NAMES:
     raise RegistryValidationError("plan-mode allowlist contains unknown tools")
 
 
-# This first policy slice deliberately covers only simple operations whose
-# behavior does not vary by an action/method discriminator. Mixed tools stay
-# explicit migration debt and resolve Level 3/ALWAYS until classified.
-CLASSIFIED_TOOL_NAMES = frozenset(
-    {
-        "bash",
-        "python",
-        "web_search",
-        "web_fetch",
-        "read_file",
-        "write_file",
-        "edit_file",
-        "grep",
-        "glob",
-        "ls",
-        "get_workspace",
-        "tail_serve_output",
-    }
-)
+# Phase 2 closes the legacy registry allowance. Broad compatibility tools with
+# an action/method discriminator remain conservative Level 3 operations until
+# they can be split into narrower capabilities, but they are fully typed and
+# approval-capable rather than permanently unusable migration debt.
+CLASSIFIED_TOOL_NAMES = BUILTIN_TOOL_NAMES
 LEGACY_UNCLASSIFIED_TOOL_NAMES = BUILTIN_TOOL_NAMES - CLASSIFIED_TOOL_NAMES
 
 
@@ -685,6 +714,10 @@ _DOMAIN_GROUPS = {
     },
     "automation": {"pipeline", "manage_tasks"},
     "knowledge": {"manage_memory", "manage_skills"},
+    "private_knowledge": {"query_knowledge", "manage_knowledge", "delete_knowledge"},
+    "dashboard": {"query_dashboard"},
+    "structured_automation": {"query_automations", "manage_automation", "delete_automation"},
+    "personal_life": {"query_life", "manage_life", "delete_life"},
     "interface": {"ui_control"},
     "images": {"generate_image", "edit_image"},
     "integrations": {"api_call", "app_api", "manage_mcp", "manage_webhooks"},
@@ -694,9 +727,35 @@ _DOMAIN_GROUPS = {
         "manage_settings",
     },
     "notes": {"manage_notes"},
-    "calendar": {"manage_calendar"},
+    "calendar": {
+        "manage_calendar",
+        "query_google_calendar",
+        "create_google_calendar_hold",
+        "create_google_calendar_event",
+        "update_google_calendar_event",
+        "respond_google_calendar_invitation",
+        "update_google_calendar_attendees",
+        "delete_google_calendar_event",
+    },
+    "work": {"query_work", "manage_work", "delete_work"},
+    "meetings": {
+        "search_meetings",
+        "create_meeting",
+        "request_meeting_transcription",
+        "approve_meeting_action_item",
+        "save_meeting_knowledge",
+        "delete_meeting",
+    },
     "contacts": {"resolve_contact", "manage_contact"},
-    "email": set(BUILTIN_EMAIL_TOOLS),
+    "email": set(BUILTIN_EMAIL_TOOLS)
+    | {
+        "query_gmail",
+        "manage_gmail_draft",
+        "send_gmail",
+        "modify_gmail_message",
+        "delete_gmail",
+        "download_gmail_attachment",
+    },
     "research": {"trigger_research", "manage_research"},
     "vault": set(INTERNAL_ONLY_TOOL_NAMES),
 }
@@ -753,6 +812,27 @@ _EXTRA_INPUT_SCHEMAS = {
             "account": {"type": "string"},
         },
         required=("uid", "index"),
+    ),
+    "send_email": _object_schema(
+        {
+            "to": {"type": "string"},
+            "subject": {"type": "string"},
+            "body": {"type": "string"},
+            "cc": {"type": "string"},
+            "bcc": {"type": "string"},
+            "account": {"type": "string"},
+        },
+        required=("to", "subject", "body"),
+    ),
+    "reply_to_email": _object_schema(
+        {
+            "uid": {"type": "string"},
+            "body": {"type": "string"},
+            "folder": {"type": "string", "default": "INBOX"},
+            "reply_all": {"type": "boolean", "default": False},
+            "account": {"type": "string"},
+        },
+        required=("uid", "body"),
     ),
     "draft_email": _object_schema(
         {
@@ -838,6 +918,8 @@ class _PolicySeed:
     audit_behavior: AuditBehavior
     verification: VerificationMode
     compensation: str
+    reversible: bool = False
+    idempotency_key_fields: tuple[str, ...] = ()
 
 
 def _read_policy(
@@ -845,6 +927,7 @@ def _read_policy(
     *,
     timeout: float = 30,
     attempts: int = 1,
+    audit_behavior: AuditBehavior = AuditBehavior.METADATA,
 ) -> _PolicySeed:
     backoff = (0.5,) if attempts == 2 else ()
     return _PolicySeed(
@@ -860,9 +943,30 @@ def _read_policy(
             else (),
         ),
         idempotency=IdempotencyMode.READ_ONLY,
-        audit_behavior=AuditBehavior.METADATA,
+        audit_behavior=audit_behavior,
         verification=VerificationMode.RESULT_SCHEMA,
         compensation="not_applicable",
+    )
+
+
+def _control_policy(
+    permission: str,
+    *,
+    risk: RiskLevel,
+    timeout: float = 5,
+) -> _PolicySeed:
+    """Request-local control-plane operation with no domain/provider effect."""
+
+    return _PolicySeed(
+        permissions=frozenset({permission}),
+        risk=risk,
+        confirmation=ConfirmationPolicy.NEVER,
+        timeout_seconds=timeout,
+        retry=RetryPolicy(max_attempts=1),
+        idempotency=IdempotencyMode.NONE,
+        audit_behavior=AuditBehavior.REDACTED,
+        verification=VerificationMode.RESULT_SCHEMA,
+        compensation="restore_request_local_state",
     )
 
 
@@ -885,7 +989,67 @@ def _level_three_policy(
     )
 
 
+def _level_two_policy(
+    permission: str,
+    *,
+    timeout: float,
+    verification: VerificationMode = VerificationMode.RESULT_SCHEMA,
+) -> _PolicySeed:
+    return _PolicySeed(
+        permissions=frozenset({permission}),
+        risk=RiskLevel.LEVEL_2,
+        confirmation=ConfirmationPolicy.REQUIRED,
+        timeout_seconds=timeout,
+        retry=RetryPolicy(max_attempts=1),
+        idempotency=IdempotencyMode.NONE,
+        audit_behavior=AuditBehavior.REDACTED,
+        verification=verification,
+        compensation="not_applicable",
+    )
+
+
+def _level_one_policy(
+    permission: str,
+    *,
+    timeout: float,
+    verification: VerificationMode = VerificationMode.READ_BACK,
+    reversible: bool = True,
+    compensation: str = "restore_previous_provider_state",
+) -> _PolicySeed:
+    """Low-risk mutation eligible only for an exact standing approval rule."""
+
+    return _PolicySeed(
+        permissions=frozenset({permission}),
+        risk=RiskLevel.LEVEL_1,
+        confirmation=ConfirmationPolicy.TRUSTED_ONLY,
+        timeout_seconds=timeout,
+        retry=RetryPolicy(max_attempts=1),
+        idempotency=IdempotencyMode.NONE,
+        audit_behavior=AuditBehavior.REDACTED,
+        verification=verification,
+        compensation=compensation,
+        reversible=reversible,
+    )
+
+
 _CLASSIFIED_POLICIES = {
+    "adopt_served_model": _level_three_policy(
+        "models.runtime.write", timeout=120, verification=VerificationMode.READ_BACK
+    ),
+    "api_call": _level_three_policy(
+        "integrations.call", timeout=120, verification=VerificationMode.INDETERMINATE
+    ),
+    "app_api": _level_three_policy(
+        "application.api.call", timeout=120, verification=VerificationMode.INDETERMINATE
+    ),
+    "ask_user": _control_policy(
+        "conversation.interact",
+        risk=RiskLevel.LEVEL_0,
+    ),
+    "update_plan": _control_policy(
+        "conversation.plan",
+        risk=RiskLevel.LEVEL_1,
+    ),
     "bash": _level_three_policy(
         "shell.execute",
         timeout=3600,
@@ -906,6 +1070,32 @@ _CLASSIFIED_POLICIES = {
         timeout=30,
         verification=VerificationMode.READ_BACK,
     ),
+    "generate_image": _level_two_policy(
+        "images.generate",
+        timeout=180,
+        verification=VerificationMode.RESULT_SCHEMA,
+    ),
+    "edit_image": _level_two_policy(
+        "images.edit", timeout=300, verification=VerificationMode.RESULT_SCHEMA
+    ),
+    "manage_bg_jobs": _level_three_policy(
+        "processes.manage", timeout=30, verification=VerificationMode.INDETERMINATE
+    ),
+    "create_document": _level_two_policy(
+        "documents.write", timeout=30, verification=VerificationMode.READ_BACK
+    ),
+    "update_document": _level_two_policy(
+        "documents.write", timeout=30, verification=VerificationMode.READ_BACK
+    ),
+    "edit_document": _level_two_policy(
+        "documents.write", timeout=30, verification=VerificationMode.READ_BACK
+    ),
+    "suggest_document": _level_one_policy(
+        "documents.suggest",
+        timeout=30,
+        verification=VerificationMode.RESULT_SCHEMA,
+        compensation="delete_document_suggestions",
+    ),
     "web_search": _read_policy("research.web"),
     "web_fetch": _read_policy("research.web"),
     "read_file": _read_policy("files.read"),
@@ -913,6 +1103,166 @@ _CLASSIFIED_POLICIES = {
     "glob": _read_policy("files.read"),
     "ls": _read_policy("files.read"),
     "get_workspace": _read_policy("files.read", timeout=5),
+    "search_chats": _read_policy(
+        "conversation.read",
+        timeout=30,
+        audit_behavior=AuditBehavior.REDACTED,
+    ),
+    "list_sessions": _read_policy(
+        "conversation.read",
+        timeout=15,
+        audit_behavior=AuditBehavior.REDACTED,
+    ),
+    "create_session": _level_one_policy(
+        "conversation.write", timeout=30, compensation="delete_created_session"
+    ),
+    "send_to_session": _level_two_policy(
+        "conversation.write", timeout=120, verification=VerificationMode.READ_BACK
+    ),
+    "manage_session": _level_three_policy(
+        "conversation.manage", timeout=60, verification=VerificationMode.READ_BACK
+    ),
+    # These can send user content to a hosted provider and incur metered usage.
+    # Static policy therefore takes the conservative provider-independent path;
+    # a future provider-aware policy may lower a proven local-only invocation.
+    "chat_with_model": _level_two_policy("models.invoke", timeout=300),
+    "ask_teacher": _level_two_policy("models.invoke", timeout=300),
+    "pipeline": _level_two_policy(
+        "models.pipeline", timeout=1800, verification=VerificationMode.INDETERMINATE
+    ),
+    "list_models": _read_policy(
+        "models.catalog.read",
+        timeout=60,
+        audit_behavior=AuditBehavior.REDACTED,
+    ),
+    "download_model": _level_two_policy(
+        "models.downloads.write", timeout=86_400, verification=VerificationMode.READ_BACK
+    ),
+    "cancel_download": _level_three_policy(
+        "models.downloads.cancel", timeout=30, verification=VerificationMode.READ_BACK
+    ),
+    "serve_model": _level_three_policy(
+        "models.runtime.write", timeout=3600, verification=VerificationMode.READ_BACK
+    ),
+    "serve_preset": _level_three_policy(
+        "models.runtime.write", timeout=3600, verification=VerificationMode.READ_BACK
+    ),
+    "stop_served_model": _level_three_policy(
+        "models.runtime.write", timeout=120, verification=VerificationMode.READ_BACK
+    ),
+    "list_email_accounts": _read_policy(
+        "email.read",
+        timeout=30,
+        audit_behavior=AuditBehavior.REDACTED,
+    ),
+    "list_emails": _read_policy(
+        "email.read",
+        timeout=60,
+        audit_behavior=AuditBehavior.REDACTED,
+    ),
+    "read_email": _read_policy(
+        "email.read",
+        timeout=60,
+        audit_behavior=AuditBehavior.REDACTED,
+    ),
+    "search_emails": _read_policy(
+        "email.read",
+        timeout=90,
+        audit_behavior=AuditBehavior.REDACTED,
+    ),
+    # Draft creation is local/reversible.  Sending is an external side effect
+    # and always enters the approval centre unless an exact Level 2 standing
+    # rule exists.  Destructive and bulk mailbox operations remain Level 3 and
+    # can never receive a standing rule.
+    "draft_email": _level_one_policy(
+        "email.draft",
+        timeout=60,
+        compensation="delete_created_draft",
+    ),
+    "draft_email_reply": _level_one_policy(
+        "email.draft",
+        timeout=90,
+        compensation="delete_created_draft",
+    ),
+    "ai_draft_email_reply": _level_two_policy(
+        "email.draft",
+        timeout=300,
+        verification=VerificationMode.READ_BACK,
+    ),
+    "send_email": _level_two_policy(
+        "email.send",
+        timeout=120,
+        verification=VerificationMode.READ_BACK,
+    ),
+    "reply_to_email": _level_two_policy(
+        "email.send",
+        timeout=120,
+        verification=VerificationMode.READ_BACK,
+    ),
+    "archive_email": _level_one_policy(
+        "email.archive",
+        timeout=90,
+        compensation="move_message_back_to_source_folder",
+    ),
+    "mark_email_read": _level_one_policy(
+        "email.modify",
+        timeout=60,
+        compensation="restore_previous_seen_flag",
+    ),
+    "download_attachment": _level_one_policy(
+        "email.attachments.download",
+        timeout=120,
+        verification=VerificationMode.READ_BACK,
+        compensation="delete_downloaded_attachment",
+    ),
+    "delete_email": _level_three_policy(
+        "email.delete",
+        timeout=90,
+        verification=VerificationMode.READ_BACK,
+    ),
+    "bulk_email": _level_three_policy(
+        "email.bulk",
+        timeout=180,
+        verification=VerificationMode.READ_BACK,
+    ),
+    "resolve_contact": _read_policy(
+        "contacts.read",
+        timeout=60,
+        audit_behavior=AuditBehavior.REDACTED,
+    ),
+    "manage_contact": _level_two_policy(
+        "contacts.write", timeout=60, verification=VerificationMode.READ_BACK
+    ),
+    "list_served_models": _read_policy(
+        "models.runtime.read",
+        timeout=30,
+        audit_behavior=AuditBehavior.REDACTED,
+    ),
+    "list_downloads": _read_policy(
+        "models.downloads.read",
+        timeout=30,
+        audit_behavior=AuditBehavior.REDACTED,
+    ),
+    "list_cached_models": _read_policy(
+        "models.cache.read",
+        timeout=90,
+        audit_behavior=AuditBehavior.REDACTED,
+    ),
+    "list_serve_presets": _read_policy(
+        "models.presets.read",
+        timeout=30,
+        audit_behavior=AuditBehavior.REDACTED,
+    ),
+    "list_cookbook_servers": _read_policy(
+        "models.infrastructure.read",
+        timeout=30,
+        audit_behavior=AuditBehavior.REDACTED,
+    ),
+    "search_hf_models": _read_policy(
+        "models.catalog.read",
+        timeout=45,
+        audit_behavior=AuditBehavior.REDACTED,
+    ),
     "tail_serve_output": _PolicySeed(
         permissions=frozenset({"models.diagnostics.read"}),
         risk=RiskLevel.LEVEL_0,
@@ -924,7 +1274,207 @@ _CLASSIFIED_POLICIES = {
         verification=VerificationMode.RESULT_SCHEMA,
         compensation="not_applicable",
     ),
+    "manage_calendar": _level_three_policy(
+        "calendar.manage", timeout=120, verification=VerificationMode.READ_BACK
+    ),
+    "manage_notes": _level_three_policy(
+        "notes.manage", timeout=60, verification=VerificationMode.READ_BACK
+    ),
+    "manage_memory": _level_three_policy(
+        "memory.manage", timeout=90, verification=VerificationMode.READ_BACK
+    ),
+    "manage_skills": _level_three_policy(
+        "skills.manage", timeout=120, verification=VerificationMode.READ_BACK
+    ),
+    "manage_tasks": _level_three_policy(
+        "scheduled_tasks.manage", timeout=120, verification=VerificationMode.READ_BACK
+    ),
+    "trigger_research": _level_two_policy(
+        "research.run", timeout=120, verification=VerificationMode.READ_BACK
+    ),
+    "manage_research": _level_three_policy(
+        "research.manage", timeout=60, verification=VerificationMode.READ_BACK
+    ),
+    "ui_control": _level_one_policy(
+        "interface.control",
+        timeout=10,
+        verification=VerificationMode.RESULT_SCHEMA,
+        compensation="restore_request_local_state",
+    ),
+    "manage_documents": _level_three_policy(
+        "documents.manage", timeout=120, verification=VerificationMode.READ_BACK
+    ),
+    "manage_endpoints": _level_three_policy(
+        "administration.endpoints", timeout=120, verification=VerificationMode.READ_BACK
+    ),
+    "manage_mcp": _level_three_policy(
+        "integrations.mcp.manage", timeout=120, verification=VerificationMode.READ_BACK
+    ),
+    "manage_webhooks": _level_three_policy(
+        "integrations.webhooks.manage", timeout=120, verification=VerificationMode.READ_BACK
+    ),
+    "manage_tokens": _level_three_policy(
+        "administration.tokens", timeout=120, verification=VerificationMode.READ_BACK
+    ),
+    "manage_settings": _level_three_policy(
+        "administration.settings", timeout=120, verification=VerificationMode.READ_BACK
+    ),
+    "vault_search": _level_three_policy(
+        "vault.metadata.read", timeout=30, verification=VerificationMode.RESULT_SCHEMA
+    ),
+    "vault_get": _level_three_policy(
+        "vault.secret.read", timeout=30, verification=VerificationMode.RESULT_SCHEMA
+    ),
+    "vault_unlock": _level_three_policy(
+        "vault.unlock", timeout=30, verification=VerificationMode.RESULT_SCHEMA
+    ),
+    "query_work": _read_policy(
+        "tasks.read",
+        timeout=30,
+        audit_behavior=AuditBehavior.REDACTED,
+    ),
+    "manage_work": _level_one_policy(
+        "tasks.write",
+        timeout=30,
+        compensation="restore_previous_local_work_record",
+    ),
+    "delete_work": _level_three_policy(
+        "tasks.delete",
+        timeout=30,
+        verification=VerificationMode.READ_BACK,
+    ),
+    "query_gmail": _read_policy(
+        "email.read",
+        timeout=90,
+        audit_behavior=AuditBehavior.REDACTED,
+    ),
+    "manage_gmail_draft": _level_one_policy(
+        "email.draft",
+        timeout=90,
+        compensation="delete_or_restore_provider_draft",
+    ),
+    "send_gmail": _level_two_policy(
+        "email.send",
+        timeout=120,
+        verification=VerificationMode.READ_BACK,
+    ),
+    "modify_gmail_message": _level_one_policy(
+        "email.modify",
+        timeout=90,
+        compensation="restore_previous_gmail_labels",
+    ),
+    "delete_gmail": _level_three_policy(
+        "email.delete",
+        timeout=90,
+        verification=VerificationMode.READ_BACK,
+    ),
+    "download_gmail_attachment": _level_one_policy(
+        "email.attachments.download",
+        timeout=120,
+        compensation="delete_downloaded_attachment",
+    ),
+    "query_google_calendar": _read_policy(
+        "calendar.read",
+        timeout=90,
+        audit_behavior=AuditBehavior.REDACTED,
+    ),
+    "create_google_calendar_hold": _level_one_policy(
+        "calendar.write",
+        timeout=90,
+        compensation="delete_created_calendar_hold",
+    ),
+    "create_google_calendar_event": _level_two_policy(
+        "calendar.write",
+        timeout=120,
+        verification=VerificationMode.READ_BACK,
+    ),
+    "update_google_calendar_event": _level_two_policy(
+        "calendar.write",
+        timeout=120,
+        verification=VerificationMode.READ_BACK,
+    ),
+    "respond_google_calendar_invitation": _level_two_policy(
+        "calendar.write",
+        timeout=90,
+        verification=VerificationMode.READ_BACK,
+    ),
+    "update_google_calendar_attendees": _level_two_policy(
+        "calendar.write",
+        timeout=120,
+        verification=VerificationMode.READ_BACK,
+    ),
+    "delete_google_calendar_event": _level_three_policy(
+        "calendar.delete",
+        timeout=120,
+        verification=VerificationMode.READ_BACK,
+    ),
+    "search_meetings": _read_policy(
+        "meetings.read",
+        timeout=45,
+        audit_behavior=AuditBehavior.REDACTED,
+    ),
+    "create_meeting": _level_one_policy(
+        "meetings.record",
+        timeout=30,
+        compensation="delete_created_meeting",
+    ),
+    "request_meeting_transcription": _level_one_policy(
+        "meetings.transcribe",
+        timeout=45,
+        compensation="cancel_or_restore_meeting_processing_state",
+    ),
+    "approve_meeting_action_item": _PolicySeed(
+        permissions=frozenset({"meetings.write", "tasks.write"}),
+        risk=RiskLevel.LEVEL_2,
+        confirmation=ConfirmationPolicy.REQUIRED,
+        timeout_seconds=45,
+        retry=RetryPolicy(max_attempts=1),
+        idempotency=IdempotencyMode.LOCAL_KEY,
+        audit_behavior=AuditBehavior.REDACTED,
+        verification=VerificationMode.READ_BACK,
+        compensation="not_applicable",
+        idempotency_key_fields=("meeting_id", "claim_id"),
+    ),
+    "save_meeting_knowledge": _level_two_policy(
+        "knowledge.write",
+        timeout=90,
+        verification=VerificationMode.READ_BACK,
+    ),
+    "delete_meeting": _level_three_policy(
+        "meetings.delete",
+        timeout=60,
+        verification=VerificationMode.READ_BACK,
+    ),
+    "query_knowledge": _read_policy(
+        "knowledge.read",
+        timeout=45,
+        audit_behavior=AuditBehavior.REDACTED,
+    ),
+    "manage_knowledge": _level_one_policy(
+        "knowledge.write",
+        timeout=90,
+        compensation="restore_or_rebuild_private_knowledge_record",
+    ),
+    "delete_knowledge": _level_three_policy(
+        "knowledge.delete",
+        timeout=90,
+        verification=VerificationMode.READ_BACK,
+    ),
+    "query_dashboard": _read_policy(
+        "dashboard.read",
+        timeout=90,
+        audit_behavior=AuditBehavior.REDACTED,
+    ),
+    "query_automations": _read_policy("automations.read", timeout=30, audit_behavior=AuditBehavior.REDACTED),
+    "manage_automation": _level_two_policy("automations.write", timeout=120, verification=VerificationMode.READ_BACK),
+    "delete_automation": _level_three_policy("automations.delete", timeout=60, verification=VerificationMode.READ_BACK),
+    "query_life": _read_policy("life.read", timeout=30, audit_behavior=AuditBehavior.REDACTED),
+    "manage_life": _level_two_policy("life.write", timeout=60, verification=VerificationMode.READ_BACK),
+    "delete_life": _level_three_policy("life.delete", timeout=60, verification=VerificationMode.READ_BACK),
 }
+
+if frozenset(_CLASSIFIED_POLICIES) != CLASSIFIED_TOOL_NAMES:
+    raise RegistryValidationError("classified tool policy inventory drift")
 
 
 def _human_label(name: str) -> str:
@@ -983,6 +1533,11 @@ def build_builtin_registry() -> ToolRegistry:
             surfaces.add(ToolSurface.FENCE)
         if name in native:
             surfaces.add(ToolSurface.NATIVE)
+        if _binding_for(name).startswith("builtin_mcp:"):
+            # Qualified bundled MCP identities are canonical aliases backed by
+            # this static definition. Third-party/discovered MCP tools still
+            # require a separate runtime overlay.
+            surfaces.add(ToolSurface.DYNAMIC_MCP)
 
         if typed:
             permissions = policy.permissions
@@ -994,6 +1549,8 @@ def build_builtin_registry() -> ToolRegistry:
             audit_behavior = policy.audit_behavior
             verification = policy.verification
             compensation = policy.compensation
+            reversible = policy.reversible
+            idempotency_key_fields = policy.idempotency_key_fields
             migration_state = MigrationState.TYPED
         else:
             # This is deliberately not a guessed policy. Every consumer must
@@ -1007,6 +1564,8 @@ def build_builtin_registry() -> ToolRegistry:
             audit_behavior = AuditBehavior.REDACTED
             verification = VerificationMode.INDETERMINATE
             compensation = "manual_reconciliation_required"
+            reversible = False
+            idempotency_key_fields = ()
             migration_state = MigrationState.LEGACY_UNCLASSIFIED
 
         definitions.append(
@@ -1021,11 +1580,11 @@ def build_builtin_registry() -> ToolRegistry:
                 permissions=permissions,
                 risk=risk,
                 confirmation=confirmation,
-                reversible=False,
+                reversible=reversible,
                 timeout_seconds=timeout_seconds,
                 retry=retry,
                 idempotency=idempotency,
-                idempotency_key_fields=(),
+                idempotency_key_fields=idempotency_key_fields,
                 audit_behavior=audit_behavior,
                 audit_fields=_AUDIT_FIELDS,
                 compensation=compensation,
@@ -1049,4 +1608,6 @@ def build_builtin_registry() -> ToolRegistry:
         definitions,
         allowed_legacy_names=LEGACY_UNCLASSIFIED_TOOL_NAMES,
     )
+    # Production startup has no migration-debt exception after Phase 2.
+    registry.validate(allow_legacy=False)
     return registry

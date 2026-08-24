@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Odysseus — first-time setup script.
+"""OM Automate first-time setup script.
 
 Creates data directories, initializes the database, and sets up an
 initial admin user. Safe to re-run (skips what already exists).
@@ -13,12 +13,20 @@ import sys
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
+from src.runtime_security import apply_private_umask, secure_runtime_storage
+
+apply_private_umask()
+
 from src.constants import (
     DATA_DIR, AUTH_FILE, UPLOAD_DIR, PERSONAL_DIR, PERSONAL_UPLOADS_DIR,
     TTS_CACHE_DIR, GENERATED_IMAGES_DIR, DEEP_RESEARCH_DIR, CHROMA_DIR,
     RAG_DIR, MEMORY_VECTORS_DIR, PASSWORD_MIN_LENGTH,
 )
+from src.branding import get_brand_config
 from core.auth import RESERVED_USERNAMES
+
+BRAND = get_brand_config()
+PRODUCT_NAME = BRAND.product_name
 
 DIRS = [
     DATA_DIR,
@@ -31,13 +39,15 @@ DIRS = [
     CHROMA_DIR,
     RAG_DIR,
     MEMORY_VECTORS_DIR,
-    os.path.join(BASE_DIR, "logs"),
+    os.path.join(DATA_DIR, "logs"),
 ]
 
 
 def create_dirs():
     for d in DIRS:
         os.makedirs(d, exist_ok=True)
+        if os.name != "nt":
+            os.chmod(d, 0o700)
         print(f"  [ok] {os.path.relpath(d, BASE_DIR)}/")
 
 
@@ -101,12 +111,18 @@ def create_default_admin():
         username = os.getenv("ODYSSEUS_ADMIN_USER", "").strip().lower()
         password = os.getenv("ODYSSEUS_ADMIN_PASSWORD", "").strip()
 
+        internal_test_defaults = (
+            os.getenv("OM_AUTOMATE_INTERNAL_TEST_DEFAULTS", "").strip() == "1"
+            and username == "admin"
+            and password == "Admin"
+        )
+
         if username and password:
             # Both provided via env — validate before using
             if username in RESERVED_USERNAMES:
                 print(f"  [error] ODYSSEUS_ADMIN_USER '{username}' is a reserved username")
                 return "failed"
-            if len(password) < PASSWORD_MIN_LENGTH:
+            if len(password) < PASSWORD_MIN_LENGTH and not internal_test_defaults:
                 print(f"  [error] ODYSSEUS_ADMIN_PASSWORD must be at least {PASSWORD_MIN_LENGTH} characters")
                 return "failed"
         elif sys.stdin.isatty() and not os.getenv("ODYSSEUS_SKIP_ADMIN_PROMPT"):
@@ -129,11 +145,15 @@ def create_default_admin():
         }
         with open(auth_path, "w", encoding="utf-8") as f:
             json.dump(auth_data, f, indent=2)
+        if os.name != "nt":
+            os.chmod(auth_path, 0o600)
 
         if sys.stdin.isatty() and not os.getenv("ODYSSEUS_ADMIN_PASSWORD"):
             print(f"  [ok] Admin account created ({username})")
         else:
             print(f"  [ok] Initial admin user created ({username})")
+            if internal_test_defaults:
+                print("        Internal test credentials are active. Change the password after testing.")
             if not os.getenv("ODYSSEUS_ADMIN_PASSWORD"):
                 print(f"        Temporary password: {password}")
                 print(f"        ** Change it after first login. Set ODYSSEUS_ADMIN_PASSWORD to choose your own. **")
@@ -146,7 +166,7 @@ def create_default_admin():
             print("  [error] bcrypt loaded with the wrong CPU architecture.")
             print("          Rebuild the venv with an arm64 Python:")
             print("            rm -rf venv && /opt/homebrew/bin/python3.11 -m venv venv")
-            print("            ./venv/bin/pip install -r requirements.txt")
+            print("            ./venv/bin/pip install -r requirements-om.lock")
             return "skipped"
         print("  [warn] bcrypt not installed — skipping admin user creation")
         print("         Run: pip install bcrypt")
@@ -158,11 +178,15 @@ def create_env():
     env_path = os.path.join(BASE_DIR, ".env")
     example_path = os.path.join(BASE_DIR, ".env.example")
     if os.path.exists(env_path):
+        if os.name != "nt":
+            os.chmod(env_path, 0o600)
         print("  [skip] .env already exists")
         return
     if os.path.exists(example_path):
         import shutil
         shutil.copy2(example_path, env_path)
+        if os.name != "nt":
+            os.chmod(env_path, 0o600)
         print("  [ok] .env created from .env.example")
         print("        ** Edit .env with your LLM host and API keys **")
     else:
@@ -179,7 +203,7 @@ def check_deps():
             missing.append(mod)
     if missing:
         print(f"\n  [warn] Missing packages: {', '.join(missing)}")
-        print(f"         Run: pip install -r requirements.txt")
+        print("         Run: pip install -r requirements-om.lock")
     else:
         print("  [ok] All core dependencies installed")
 
@@ -230,14 +254,14 @@ def check_arch():
     print("            brew install python@3.11          # if you don't have it yet")
     print("            rm -rf venv")
     print("            /opt/homebrew/bin/python3.11 -m venv venv")
-    print("            ./venv/bin/pip install -r requirements.txt")
+    print("            ./venv/bin/pip install -r requirements-om.lock")
     print("            ./venv/bin/python setup.py")
     print("\n          Tip: ./start-macos.sh does all of this with the right Python.\n")
     sys.exit(1)
 
 
 def main():
-    print("\n=== Odysseus Setup ===\n")
+    print(f"\n=== {PRODUCT_NAME} Setup ===\n")
 
     # Load .env so pre-seeded ODYSSEUS_ADMIN_USER / ODYSSEUS_ADMIN_PASSWORD (and
     # other deployment vars) are honored on native installs, not just when they
@@ -277,6 +301,8 @@ def main():
     except Exception as e:
         print(f"  [warn] Admin creation failed: {e}")
         admin_status = "failed"
+
+    secure_runtime_storage(DATA_DIR, os.path.join(BASE_DIR, ".env"))
 
     print("\n=== Setup complete ===")
     # start-macos.sh launches the server itself (on its own port) right after

@@ -129,7 +129,8 @@ def test_process_with_thinking_handles_gemma4_thought_channel(node_available):
     )
 
     assert "thinking-section" in html
-    assert "internal reasoning" in html
+    assert "internal reasoning" not in html
+    assert "Private chain-of-thought is not displayed" in html
     assert "Final answer." in html
     assert "&lt;|channel&gt;" not in html
     assert "<|channel>" not in html
@@ -154,7 +155,8 @@ def test_process_with_thinking_unwraps_gemma4_response_channel(node_available):
     )
 
     assert "thinking-section" in html
-    assert "internal reasoning" in html
+    assert "internal reasoning" not in html
+    assert "Private chain-of-thought is not displayed" in html
     assert "Final answer." in html
     assert "&lt;|channel&gt;" not in html
     assert "<|channel>" not in html

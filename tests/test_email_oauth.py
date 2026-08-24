@@ -12,10 +12,8 @@ IMAP/SMTP support:
   silent (no token/secret in logs or return value).
 - `_get_valid_google_token` — uses cached token when fresh; calls refresh when
   expired.
-- `google_oauth_callback` (real route) — invalid/tampered/missing state and
-  provider errors return generic redirects with no PII; owner mismatch refuses
-  the token write; a valid owner writes encrypted tokens only to the intended
-  account.
+- retired email OAuth routes — remain inert migration shims that never exchange
+  new credentials and direct users to the hardened Google Workspace flow.
 - `list_email_accounts` (real route) — exposes OAuth status but never token
   values.
 - `_imap_connect` — password accounts use login(); OAuth accounts use XOAUTH2.
@@ -255,11 +253,7 @@ def test_refresh_stores_encrypted_expiry_not_token():
         "token_expiry must be a timestamp, not the token string"
 
 
-# ── Real OAuth callback route ─────────────────────────────────────
-#
-# These pull the actual google_oauth_callback endpoint out of the router and
-# invoke it — they pin the real route's behaviour, not a re-implementation, so
-# they fail if the ownership/state guards are ever removed or weakened.
+# ── Retired route migration shims ─────────────────────────────────
 
 def _callback_endpoint():
     """Return the live google_oauth_callback endpoint from the email router."""
@@ -269,6 +263,16 @@ def _callback_endpoint():
         if route.path == "/api/email/oauth/google/callback" and "GET" in getattr(route, "methods", set()):
             return route.endpoint
     raise AssertionError("google_oauth_callback route not found")
+
+
+def _authorize_endpoint():
+    """Return the retired legacy authorizer migration shim."""
+    from routes.email_routes import setup_email_routes
+    router = setup_email_routes()
+    for route in router.routes:
+        if route.path == "/api/email/oauth/google/authorize" and "GET" in getattr(route, "methods", set()):
+            return route.endpoint
+    raise AssertionError("google_oauth_authorize route not found")
 
 
 class _FakeRequest:
@@ -282,129 +286,41 @@ def _location(resp):
 
 
 @pytest.mark.asyncio
-async def test_callback_missing_code_returns_generic_error():
-    """No `code` query param → generic error redirect, with no account id, owner,
-    or state echoed back into the URL."""
-    from routes.email_helpers import make_oauth_state
-
+async def test_retired_callback_never_exchanges_or_persists_credentials():
+    """Old callbacks are inert and direct users to the hardened connection UI."""
     callback = _callback_endpoint()
-    state = make_oauth_state("acct-1", "alice")
-    resp = await callback(code=None, state=state, error=None, request=_FakeRequest())
+    with mock.patch("httpx.post") as post, mock.patch("httpx.get") as get:
+        resp = await callback(
+            code="4/secret-auth-code",
+            state="legacy-state",
+            error=None,
+            request=_FakeRequest(),
+        )
 
-    loc = _location(resp)
-    assert "email_oauth_error=missing_code" in loc
-    assert "acct-1" not in loc, "account id must not appear in redirect URL"
-    assert "alice" not in loc, "owner must not appear in redirect URL"
-
-
-@pytest.mark.asyncio
-async def test_callback_provider_error_returns_generic_error():
-    """An `error` from Google → generic error redirect, no raw provider text."""
-    callback = _callback_endpoint()
-    resp = await callback(code=None, state=None, error="access_denied", request=_FakeRequest())
-
-    loc = _location(resp)
-    assert "email_oauth_error=google_error" in loc
-    assert "access_denied" not in loc, "raw provider error must not leak into redirect"
+    location = _location(resp)
+    assert resp.status_code == 303
+    assert "google_oauth=setup" in location
+    assert "legacy_email_oauth_retired" in location
+    assert "4/secret-auth-code" not in location
+    assert "legacy-state" not in location
+    post.assert_not_called()
+    get.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_callback_tampered_state_returns_generic_error_no_leak():
-    """Tampered/invalid state → invalid_state redirect; the auth code and any
-    token must never appear in the redirect URL."""
-    callback = _callback_endpoint()
-    resp = await callback(code="4/secret-auth-code", state="not-a-valid-state",
-                          error=None, request=_FakeRequest())
+async def test_retired_authorizer_owner_checks_then_redirects_to_workspace_setup():
+    authorize = _authorize_endpoint()
+    with mock.patch("routes.email_routes._assert_owns_account") as owns:
+        resp = await authorize(
+            account_id="acct-1",
+            request=_FakeRequest(),
+            owner="alice",
+        )
 
-    loc = _location(resp)
-    assert "email_oauth_error=invalid_state" in loc
-    assert "4/secret-auth-code" not in loc, "auth code must not leak into redirect"
-    assert "token" not in loc
-
-
-@pytest.mark.asyncio
-async def test_callback_owner_mismatch_does_not_write_tokens():
-    """A signed, valid state whose owner does not match the target account's
-    owner must NOT write tokens — this blocks one authenticated user from
-    binding their Google account onto another user's mailbox row.
-    """
-    from routes.email_helpers import make_oauth_state
-    from core.database import EmailAccount
-
-    db, Factory = _make_db()
-    _make_account(db, account_id="acct-x", owner="alice")
-    db.close()
-
-    # Token-exchange + userinfo would succeed — the point is the ownership gate
-    # rejects the write *before* trusting them.
-    token_resp = mock.MagicMock()
-    token_resp.raise_for_status = mock.MagicMock()
-    token_resp.json.return_value = {"access_token": "ya29.attacker", "refresh_token": "r", "expires_in": 3600}
-    userinfo_resp = mock.MagicMock()
-    userinfo_resp.is_success = True
-    userinfo_resp.json.return_value = {"email": "bob@evil.com", "name": "Bob"}
-
-    # State is genuinely signed, but for owner "bob" — not the row owner "alice".
-    state = make_oauth_state("acct-x", "bob")
-
-    with mock.patch("httpx.post", return_value=token_resp), \
-         mock.patch("httpx.get", return_value=userinfo_resp), \
-         mock.patch("core.database.SessionLocal", Factory):
-        callback = _callback_endpoint()
-        resp = await callback(code="4/code", state=state, error=None, request=_FakeRequest())
-
-    loc = _location(resp)
-    assert "email_oauth_error=ownership_error" in loc
-
-    verify_db = Factory()
-    row = verify_db.query(EmailAccount).filter(EmailAccount.id == "acct-x").first()
-    token_after = row.oauth_access_token
-    verify_db.close()
-    assert token_after is None, "no token may be written when ownership check fails"
-
-
-@pytest.mark.asyncio
-async def test_callback_valid_owner_writes_encrypted_tokens_to_intended_account():
-    """A signed state whose owner matches the target account writes the tokens —
-    and only to that account, stored encrypted (raw token never persisted)."""
-    from routes.email_helpers import make_oauth_state
-    from src.secret_storage import decrypt as _dec
-    from core.database import EmailAccount
-
-    db, Factory = _make_db()
-    _make_account(db, account_id="acct-v", owner="alice", imap_host="", smtp_host="")
-    _make_account(db, account_id="acct-other", owner="alice")  # must stay untouched
-    db.close()
-
-    raw_access = "ya29.legit_access_token"
-    raw_refresh = "1//legit_refresh_token"
-    token_resp = mock.MagicMock()
-    token_resp.raise_for_status = mock.MagicMock()
-    token_resp.json.return_value = {"access_token": raw_access, "refresh_token": raw_refresh, "expires_in": 3600}
-    userinfo_resp = mock.MagicMock()
-    userinfo_resp.is_success = True
-    userinfo_resp.json.return_value = {"email": "alice@nyu.edu", "name": "Alice"}
-
-    state = make_oauth_state("acct-v", "alice")
-
-    with mock.patch("httpx.post", return_value=token_resp), \
-         mock.patch("httpx.get", return_value=userinfo_resp), \
-         mock.patch("core.database.SessionLocal", Factory):
-        callback = _callback_endpoint()
-        resp = await callback(code="4/code", state=state, error=None, request=_FakeRequest())
-
-    assert "email_oauth_success=1" in _location(resp)
-
-    verify_db = Factory()
-    target = verify_db.query(EmailAccount).filter(EmailAccount.id == "acct-v").first()
-    other = verify_db.query(EmailAccount).filter(EmailAccount.id == "acct-other").first()
-    verify_db.close()
-
-    assert target.oauth_provider == "google"
-    assert target.oauth_access_token != raw_access, "access token must be stored encrypted"
-    assert _dec(target.oauth_access_token) == raw_access
-    assert _dec(target.oauth_refresh_token) == raw_refresh
-    assert other.oauth_access_token is None, "tokens must only touch the intended account"
+    owns.assert_called_once_with("acct-1", "alice")
+    assert resp.status_code == 303
+    assert "google_oauth=setup" in _location(resp)
+    assert "acct-1" not in _location(resp)
 
 
 # ── Token refresh scenarios ───────────────────────────────────────

@@ -7,6 +7,7 @@ Provides token estimation for context usage tracking.
 
 import ipaddress
 import logging
+import re
 import sys
 from typing import Dict, List, Optional, Tuple
 
@@ -344,6 +345,43 @@ def _model_ctx_from_entry(m: dict) -> Optional[int]:
     return None
 
 
+def _ollama_configured_context(endpoint_url: str, model: str) -> Optional[int]:
+    """Return an Ollama model profile's explicit ``num_ctx`` override.
+
+    ``/api/tags`` and ``/v1/models`` describe the weights' maximum context, not
+    the context configured in a derived Modelfile. Using that maximum can turn a
+    hardware-safe 32K profile into a 131K/256K allocation and exhaust unified
+    memory. Probe only local Ollama-looking endpoints and prefer the explicit
+    profile value reported by ``/api/show``.
+    """
+    try:
+        parsed = urlparse(endpoint_url)
+        path = (parsed.path or "").rstrip("/")
+        if not is_local_endpoint(endpoint_url):
+            return None
+        if parsed.port != 11434 and not path.endswith("/api"):
+            return None
+        root = f"{parsed.scheme or 'http'}://{parsed.netloc}"
+        response = httpx.post(
+            f"{root}/api/show",
+            json={"model": model},
+            timeout=REQUEST_TIMEOUT,
+        )
+        if not response.is_success:
+            return None
+        parameters = response.json().get("parameters") or ""
+        if isinstance(parameters, dict):
+            value = parameters.get("num_ctx")
+            return int(value) if isinstance(value, (int, float)) and value > 0 else None
+        if isinstance(parameters, str):
+            match = re.search(r"(?m)^\s*num_ctx\s+(\d+)\s*$", parameters)
+            if match and int(match.group(1)) > 0:
+                return int(match.group(1))
+    except Exception as exc:
+        logger.debug("Failed to read Ollama profile context for %s: %s", model, exc)
+    return None
+
+
 # Per-endpoint cache of the {model_id: context_length} map parsed from a
 # proxy/api catalog. api/proxy endpoints skip the /models download on every
 # lookup because a large catalog is expensive; caching the whole map lets us
@@ -431,6 +469,14 @@ def _query_context_length(endpoint_url: str, model: str) -> Tuple[int, bool]:
                         return n_ctx, True
         except Exception:
             pass
+
+        # Ollama model profiles can intentionally cap context below the
+        # weights' advertised maximum. Honour that cap before the generic model
+        # catalog/known-name fallbacks so native requests do not override it.
+        ollama_ctx = _ollama_configured_context(endpoint_url, model)
+        if ollama_ctx:
+            logger.info("Ollama profile reports num_ctx=%s for %s", ollama_ctx, model)
+            return ollama_ctx, True
 
     # GitHub Copilot's /models requires auth + X-GitHub-Api-Version headers that
     # aren't available here; an unauthenticated probe just 400s. All Copilot

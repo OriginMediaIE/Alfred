@@ -2,18 +2,22 @@
 
 ## 1. Deployment status
 
-This guide describes the current upstream deployment paths and the gates required for an OM Automate release. The audited baseline is upstream `main` commit `9844a2f9a1996b8c8135a9e7bbde6a72f41df5ed`.
+This guide describes the current OM Automate deployment profile and its remaining release gates. The audited transformation baseline is upstream `main` commit `9844a2f9a1996b8c8135a9e7bbde6a72f41df5ed`.
 
-The current repository is **not yet a reproducible production release**:
+The repository now has a reproducible **Docker installation contract**, but it is
+not yet qualified as a production release:
 
-- the recommended Docker daemon was unavailable during the audit, so no image build or Compose startup was verified;
-- most Python dependencies are not exactly pinned;
-- ChromaDB and ntfy container images float;
-- the native manual launch starts without ChromaDB and degrades vector features;
-- readiness is authentication-gated and does not cover all critical dependencies;
-- the documented log bind mount does not contain the application file log;
-- secret-bearing native files were created with group/world-readable `0644` modes;
-- database changes use import-time ad hoc migrations rather than a versioned migration framework.
+- `requirements-om.lock` and `requirements-optional.lock` pin every declared Python distribution exactly;
+- the runtime uses Python `3.14.6`; ChromaDB `1.5.9`, SearXNG `2026.5.31-7159b8aed`, and ntfy `v2.26.0` are exact Compose tags;
+- macOS/Linux and Windows launchers perform preflight, protect existing configuration/data, validate Compose, start idempotently, and wait for `/api/ready`;
+- Compose health-gates SearXNG, ChromaDB, and the application;
+- syntax, Compose rendering, static pin checks, and a network-free fake-Docker installer harness pass;
+- the Docker daemon was unavailable on the audit host, so no image pull/build, container startup, authenticated browser smoke, restart, backup/restore, or upgrade was verified;
+- downloaded build artifacts are versioned but not all carry checked-in SHA-256 values or immutable container digests;
+- the native manual launch can still degrade vector features and is not the maintained release profile;
+- dependency-aware readiness and the log bind mismatch were completed in
+  Personal PrivateOS Phase 1; versioned database migrations and cross-platform
+  qualification remain open.
 
 Do not describe a platform as supported until its installation, browser smoke, restart, backup, restore, and upgrade evidence has passed `10-test-plan.md`.
 
@@ -21,12 +25,12 @@ Do not describe a platform as supported until its installation, browser smoke, r
 
 | Platform | Evidence | Current claim |
 | --- | --- | --- |
-| macOS Apple Silicon, native | Dependencies installed; setup and Uvicorn launched; authenticated browser, local-model, task/note, restart-persistence, and logout smoke observed | Partially verified; Chroma, provider-backed email/calendar/knowledge, backup/restore, and upgrade remain open |
-| macOS Apple Silicon, Docker Desktop | Compose files parse; daemon was stopped | Not installation-tested |
+| macOS Apple Silicon, native | Dependencies installed; setup/Uvicorn, authenticated browser, local-model, restart persistence, encrypted backup preflight, 32-file/6-database fresh restore rehearsal, rollback evidence, and scoped companion smoke observed | Phase 5 implementation verified; seven-day soak, physical iPhone Safari, Chroma, live providers, and copied-data upgrade remain open |
+| macOS Apple Silicon, Docker Desktop | Shell preflight reached the daemon gate; Compose parses; daemon was stopped | Installer logic verified; runtime not installation-tested |
 | macOS Intel | None | Unverified |
-| Windows Docker Desktop | Compose files parse on macOS only | Unverified |
+| Windows Docker Desktop | PowerShell launcher inspected and statically tested; Compose parses on macOS only | Unverified on Windows |
 | Windows native / WSL2 | Launcher inspected; no PowerShell runtime test | Unverified |
-| Linux CPU | None on this commit | Unverified |
+| Linux CPU | POSIX installer exercised twice against a network-free fake Docker CLI with preserved `.env`; shell syntax and Compose parse pass | Harness-verified only; no real container run |
 | Linux NVIDIA | Overlay parses; no hardware run | Unverified |
 | Linux AMD | Overlay parses; no hardware run | Unverified |
 
@@ -67,9 +71,13 @@ Docker mounts the host's `${APP_DATA_DIR:-./data}` at `/app/data`. It also mount
 
 Docker Chroma data is separate in the Compose-managed `chromadb-data` volume. A backup of `./data` alone is therefore incomplete for Docker deployments.
 
-### Known log-path defect
+### Application logs
 
-Compose mounts `${APP_LOGS_DIR:-./logs}` at `/app/logs`, but the application writes `/app/data/logs/app.log`. In the audited native run, `logs/` stayed empty. Until this is fixed, use:
+Compose mounts `${APP_LOGS_DIR:-./logs}` at `/app/data/logs`, matching the
+application's `DATA_DIR/logs/app.log` sink. The entrypoint repairs ownership and
+the application applies owner-only POSIX modes. Real Docker log-persistence and
+rotation evidence is still pending because Docker Desktop was stopped during
+the Phase 1 verification. For current diagnostics use:
 
 ```bash
 tail -f data/logs/app.log
@@ -100,38 +108,46 @@ GPU overlays additionally require host driver/runtime configuration. The overlay
 
 On Apple Silicon, use an arm64 Homebrew Python. Do not create the venv with an x86 interpreter under Rosetta.
 
-## 6. Reproducibility gate
+## 6. Reproducibility contract and remaining gate
 
-The current manifests do not meet the OM Automate requirement for repeatable installation. Before issuing a release:
+The maintained Docker profile installs from `requirements-om.lock`; optional PDF,
+Office, transcription, and search extras use `requirements-optional.lock`. The
+Dockerfile and all base Compose services use exact version tags. Unpinned
+`requirements*.txt` files remain developer inputs and are not consumed by the
+release image.
 
-1. produce and commit reviewed Python locks for every supported platform/architecture;
-2. pin the Python base image, ChromaDB, SearXNG, ntfy, backup helper images, and GPU/runtime images by immutable digest;
-3. retain `package-lock.json` and use `npm ci` for any Node dependency used in build/test;
-4. record Docker CLI downloads and other fetched artifacts with SHA-256 verification;
-5. record the OS, Python, Node, Docker, model runtime, and model artifact versions in a release manifest;
-6. rebuild from empty caches and compare the resolved manifest;
-7. update versions only through a tested dependency-update change.
+Before issuing a signed release:
 
-Until this gate is implemented, a later install can resolve different packages or images even at the same Git commit.
+1. resolve/test locks on every claimed platform and architecture, including wheel availability;
+2. add immutable image digests and SHA-256 verification for the Docker CLI and every downloaded build artifact;
+3. retain `package-lock.json` and use `npm ci` for Node build/test dependencies;
+4. publish a signed release manifest containing source commit, OS/architecture matrix, Python, Node, Docker, service, model-runtime, and model-artifact versions;
+5. rebuild from empty caches and compare installed distributions and image digests;
+6. run fresh-install, restart, backup, restore, rollback, and upgrade acceptance on each claimed platform;
+7. change any pin only through a reviewed dependency-update change with the same qualification evidence.
+
+Exact tags prevent ordinary floating-version drift, but they are not equivalent to
+an immutable digest when a registry owner can retag an image.
 
 ## 7. Docker installation
 
-Docker Compose is the intended supported deployment once its fresh-install test passes.
+Docker Compose is the maintained deployment profile. Platform support is granted
+only after its fresh-install acceptance passes.
 
 ### 7.1 Checkout and environment
 
-Use an immutable release tag or commit, not a moving branch:
+Use the published OM Automate repository and a signed immutable release tag, not
+a moving branch. No public OM Automate release URL/tag exists yet; the following
+placeholders are a release blocker and must not be distributed unchanged:
 
 ```bash
-git clone https://github.com/odysseus-dev/odysseus.git om-automate
+git clone <OM_AUTOMATE_RELEASE_URL> om-automate
 cd om-automate
-git checkout 9844a2f9a1996b8c8135a9e7bbde6a72f41df5ed
-umask 077
-cp .env.example .env
-chmod 600 .env
+git checkout <SIGNED_RELEASE_TAG>
 ```
 
-For an OM Automate release, replace the source URL and commit with the published OM Automate repository and signed release tag.
+The one-click installer creates `.env` with restrictive permissions only if it is
+missing and never overwrites an existing file.
 
 Set at least these deployment values in `.env`:
 
@@ -158,14 +174,27 @@ id -g
 ### 7.2 Preflight and launch
 
 ```bash
-docker version
-docker compose version
-docker compose config --quiet
-docker compose build
-docker compose up -d
-docker compose ps
-docker compose logs --tail=200 odysseus
+# macOS / Linux: validate without pulling/building/starting
+./install-om-automate.sh --check
+
+# Build, start, health-check, and open the local application
+./install-om-automate.sh
+
+# Optional accelerator overlays after the host runtime is verified
+./install-om-automate.sh --accelerator nvidia
+./install-om-automate.sh --accelerator amd
 ```
+
+```powershell
+# Windows PowerShell (or double-click install-om-automate.cmd)
+.\install-om-automate.ps1 -Check
+.\install-om-automate.ps1
+```
+
+For diagnostics, the equivalent manual commands are `docker compose config
+--quiet`, `docker compose up -d --build`, `docker compose ps`, and `docker compose
+logs --tail=200 odysseus`. Do not delete `.env`, `data/`, or named volumes to
+resolve an install failure.
 
 First boot runs `setup.py` in the container and then executes Uvicorn on container port 7000. If no admin password was pre-seeded, retrieve the generated temporary password from the first setup log and change it immediately:
 
@@ -175,9 +204,11 @@ docker compose logs odysseus
 
 Open `http://127.0.0.1:7000` only after the release health gate succeeds.
 
-### 7.3 Current health limitations
+### 7.3 Health contract and limitations
 
-The base Compose file currently has a health check only for SearXNG. ChromaDB is gated on `service_started`; Odysseus and ntfy have no Compose health checks.
+The base Compose file health-checks SearXNG, ChromaDB, and the OM application.
+The application waits for the first two to become healthy, and the installers
+complete only after the public liveness probe succeeds. ntfy is not health-gated.
 
 Current probes:
 
@@ -186,7 +217,14 @@ curl --fail http://127.0.0.1:7000/api/health
 curl --fail http://127.0.0.1:7000/api/ready
 ```
 
-`/api/health` is only process liveness. `/api/ready` currently returns 401 without a session and checks only database/data-directory integrity. Before production use, the release must provide a safe unauthenticated readiness response that covers database, storage, scheduler/queue, model and embedding providers, vector store, and required integrations without leaking sensitive details.
+`/api/health` is intentionally only process liveness and returns status `live`.
+`/api/ready` is public and secret-free. It returns 200 for `ready` or usable
+`degraded` state and 503 for `failed` required checks. Current required checks
+cover database, storage, private POSIX permissions, lifecycle, scheduler, meeting,
+automation, and privacy workers; vector storage is classified as optional and may
+degrade without taking down the local Core. Authenticated diagnostics retain the
+richer provider detail. Do not add account identifiers, credentials, paths, or
+provider error bodies to the public response.
 
 ### 7.4 Local model connection
 
@@ -225,8 +263,9 @@ Validate the merged configuration before launch. GPU visibility is not proof tha
 ### 8.1 Apple Silicon one-click launcher
 
 ```bash
-git clone https://github.com/odysseus-dev/odysseus.git om-automate
+git clone <OM_AUTOMATE_RELEASE_URL> om-automate
 cd om-automate
+git checkout <SIGNED_RELEASE_TAG>
 ./start-macos.sh
 ```
 
@@ -234,14 +273,16 @@ The script:
 
 - requires Homebrew;
 - selects an arm64 Python 3.11-3.13;
-- installs missing Python requirements;
+- installs the exact core lock when it changes;
 - attempts to install `tmux`, `llama.cpp`, and Apfel;
 - runs first-time setup;
-- replaces `chromadb-client` with full `chromadb` and launches a local Chroma service;
+- replaces `chromadb-client` with full `chromadb==1.5.9` and launches a local Chroma service;
 - starts optional Apfel on 11435;
 - launches the app at `http://127.0.0.1:7860`.
 
-This path changes host packages and was not executed end-to-end during the read-only audit. It needs a clean Apple Silicon installation test before being called supported.
+This path changes host packages. Its shell, brand configuration and focused
+launcher tests pass, but it was not executed end-to-end on a clean Apple Silicon
+host and is not a qualified release profile.
 
 ### 8.2 Manual Linux/macOS path
 
@@ -249,7 +290,7 @@ This path changes host packages and was not executed end-to-end during the read-
 python3.11 -m venv venv
 source venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+python -m pip install -r requirements-om.lock
 python -m pip check
 python setup.py
 python -m uvicorn app:app --host 127.0.0.1 --port 7000
@@ -263,7 +304,11 @@ The manual path installs the Chroma HTTP client but does not start a Chroma serv
 powershell -ExecutionPolicy Bypass -File .\launch-windows.ps1
 ```
 
-The launcher creates `venv`, installs dependencies, runs setup, and serves on `127.0.0.1:7000`. Its `-BindHost` argument controls network exposure; changing `APP_BIND` in `.env` alone does not change the native Windows bind address. This path was inspected but not executed.
+The launcher creates `venv`, installs `requirements-om.lock`, runs setup, and
+serves on `127.0.0.1:7000`. Its `-BindHost` argument controls network exposure;
+changing `APP_BIND` in `.env` alone does not change the native Windows bind
+address. Static contracts pass, but PowerShell execution was not available on
+the audit host.
 
 ## 9. Initial administrator and login
 
@@ -300,10 +345,12 @@ For current email/CalDAV testing, use dedicated accounts and full collection URL
 Local speech-to-text requires the optional `faster-whisper` dependency:
 
 ```bash
-./venv/bin/python -m pip install -r requirements-optional.txt
+./venv/bin/python -m pip install -r requirements-optional.lock
 ```
 
-That file also installs other optional packages, including AGPL-licensed PyMuPDF. Review licence obligations and produce a locked optional profile before enabling it in a distributed release.
+That exact lock also installs other optional packages, including AGPL-licensed
+PyMuPDF. Review the licence obligations before enabling this profile in a
+distributed release.
 
 ## 11. File permissions
 
@@ -333,6 +380,11 @@ The application serves plain HTTP. For any access beyond loopback:
 - keep raw model, database, ChromaDB, SearXNG, and internal service ports private;
 - configure and test backup/restore before launch;
 - test session, CSRF/CORS, rate-limit, webhook, and SSRF controls through the actual proxy.
+
+The Docker installer fails closed on non-loopback binding. After setting the
+required hardened values and configuring the HTTPS proxy, authorize that
+specific launch with `OM_AUTOMATE_ALLOW_NETWORK=1`; this acknowledgement does
+not configure or prove the proxy for you.
 
 A minimal topology is:
 
@@ -423,7 +475,12 @@ Do not run `git pull` and immediately restart a production instance. Use a stage
 11. run readiness, login, model, task/note/calendar, knowledge, and persistence smoke tests;
 12. retain the previous release and backup until the observation window ends.
 
-Current schema migrations run automatically when `core.database` is imported. There is no migration version ledger and no supported down migration. A pre-upgrade data backup is therefore the rollback boundary.
+PrivateOS domain schemas now use a versioned `om_schema_migrations` ledger with
+cross-process locking and idempotent startup. Historical fixture tests cover
+those domain migrations. The older core application schema still contains
+legacy import-time migration paths and has no supported down migration, so an
+encrypted v2 pre-upgrade backup plus tested restore remains the rollback
+boundary. Track replacement of the remaining legacy path under `OM-BUG-018`.
 
 ## 16. Rollback and restore
 
@@ -482,13 +539,13 @@ For native installs, stop supervised services first, then retain or securely era
 | Docker commands cannot connect | `docker info` | Start Docker Engine/Desktop; configuration parsing alone is not a launch |
 | App unavailable on macOS port 7000 | Check launcher output | `start-macos.sh` defaults to 7860 because AirPlay may occupy 7000 |
 | RAG/memory degraded | Check 8100 and `data/logs/app.log` | Start/configure ChromaDB; manual native instructions do not do this |
-| `/api/ready` returns 401 | Compare `/api/health` | Known readiness-auth defect; do not bypass auth globally |
+| `/api/ready` returns 503 | Inspect the response's non-sensitive required check codes, then authenticated diagnostics and `data/logs/app.log` | A required core subsystem is failed; optional service loss should return 200/degraded |
 | `logs/` is empty | Inspect `data/logs/app.log` | Known `APP_LOGS_DIR` mount mismatch |
 | Files are mode `0644` | `stat`/`ls -l` | Apply restrictive umask/modes and fix creation code before multi-user deployment |
 | Browser MCP missing | Review startup log | Optional; pre-cache/install Playwright MCP only when required and pinned |
 | `python-magic` unavailable natively | Review upload log | Docker installs it with `libmagic`; define a supported native package/profile |
 | MCP shutdown warnings/orphans | Inspect process tree and log | Known lifecycle defect; stop children and block release until regression passes |
-| Dependency result changes | Compare lock/release manifest | Current requirements/images float; do not claim reproducibility |
+| Dependency result changes | Compare exact locks and image tags/digests | Stop; do not update a pin without clean-build qualification |
 
 ## 19. Launch acceptance checklist
 

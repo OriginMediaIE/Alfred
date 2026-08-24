@@ -411,11 +411,15 @@ async def _eval_skill_retrieval_precision(skill_md: str, others: list,
 _skill_test_jobs: dict = {}
 
 
-async def _run_skill_test_job(key, name, md, task, url, model, headers, owner, skills_manager=None):
+async def _run_skill_test_job(
+    key, name, md, task, url, model, headers, owner,
+    skills_manager=None, auth_manager=None,
+):
     """Background coroutine: run the skill in an agent loop, capture a condensed
     log + transcript, then have the judge grade it. Writes into _skill_test_jobs."""
     import json as _json
     from src.agent_loop import stream_agent_loop
+    from src.tool_authorization import ExecutionOrigin
 
     job = _skill_test_jobs.get(key)
     if job is None:
@@ -441,6 +445,8 @@ async def _run_skill_test_job(key, name, md, task, url, model, headers, owner, s
         async for chunk in stream_agent_loop(
             url, model, messages, headers=headers,
             temperature=0.3, max_tokens=0, max_rounds=8, owner=owner,
+            auth_manager=auth_manager,
+            execution_origin=ExecutionOrigin.SKILL_WORKFLOW,
         ):
             if not chunk.startswith("data: ") or chunk.strip() == "data: [DONE]":
                 continue
@@ -689,10 +695,13 @@ def _apply_skill_md(skills_manager, name: str, md: str, owner) -> bool:
         return False
 
 
-async def _run_skill_test_once(md: str, task: str, url, model, headers, owner) -> tuple:
+async def _run_skill_test_once(
+    md: str, task: str, url, model, headers, owner, auth_manager=None,
+) -> tuple:
     """Run the skill once in the agent loop; return (transcript, verdict)."""
     import json as _json
     from src.agent_loop import stream_agent_loop
+    from src.tool_authorization import ExecutionOrigin
     transcript = []
     messages = [
         {"role": "system", "content":
@@ -706,7 +715,9 @@ async def _run_skill_test_once(md: str, task: str, url, model, headers, owner) -
         # the skill test returning nothing while chat (which carries its
         # preset's max_tokens) worked. 4096 matches the chat default.
         async for chunk in stream_agent_loop(url, model, messages, headers=headers,
-                                             temperature=0.3, max_tokens=4096, max_rounds=8, owner=owner):
+                                             temperature=0.3, max_tokens=4096, max_rounds=8, owner=owner,
+                                             auth_manager=auth_manager,
+                                             execution_origin=ExecutionOrigin.SKILL_WORKFLOW):
             if not chunk.startswith("data: ") or chunk.strip() == "data: [DONE]":
                 continue
             try:
@@ -776,7 +787,7 @@ async def _improve_skill_md(skill_md: str, verdict: dict, transcript: str, url, 
 
 
 async def _audit_one_skill(skills_manager, skill, url, model, headers,
-                           teacher, owner, log) -> dict:
+                           teacher, owner, log, auth_manager=None) -> dict:
     """Test → judge → self-edit+retry → (teacher edit+retry) → flag. Never deletes;
     a skill the teacher still can't fix is demoted to draft for manual review.
     `teacher` is (url, model, headers) or None. `log(msg)` records progress."""
@@ -860,7 +871,9 @@ async def _audit_one_skill(skills_manager, skill, url, model, headers,
 
     task = _skill_test_task(skill)
     log(f"{name}: testing…")
-    transcript, verdict = await _run_skill_test_once(md, task, url, model, headers, owner)
+    transcript, verdict = await _run_skill_test_once(
+        md, task, url, model, headers, owner, auth_manager=auth_manager,
+    )
     v = verdict.get("verdict")
     log(f"{name}: verdict = {v} ({verdict.get('summary', '')[:80]})")
     if v == "pass":
@@ -890,7 +903,9 @@ async def _audit_one_skill(skills_manager, skill, url, model, headers,
     new_md = await _improve_skill_md(md, verdict, transcript, url, model, headers)
     if new_md and new_md.strip() != md.strip() and _apply_skill_md(skills_manager, name, new_md, owner):
         md = new_md
-        transcript, verdict = await _run_skill_test_once(md, task, url, model, headers, owner)
+        transcript, verdict = await _run_skill_test_once(
+            md, task, url, model, headers, owner, auth_manager=auth_manager,
+        )
         v = verdict.get("verdict")
         log(f"{name}: retry (self) = {v}")
         if v == "pass":
@@ -914,7 +929,9 @@ async def _audit_one_skill(skills_manager, skill, url, model, headers,
         if t_md and t_md.strip() != md.strip() and _apply_skill_md(skills_manager, name, t_md, owner):
             md = t_md
         # Re-test with the STUDENT model (the model the skill runs under in use).
-        transcript, verdict = await _run_skill_test_once(md, task, url, model, headers, owner)
+        transcript, verdict = await _run_skill_test_once(
+            md, task, url, model, headers, owner, auth_manager=auth_manager,
+        )
         v = verdict.get("verdict")
         log(f"{name}: retry on student after teacher rewrite = {v}")
         if v == "pass":
@@ -942,7 +959,10 @@ async def _audit_one_skill(skills_manager, skill, url, model, headers,
     return {"skill": name, "result": "flagged", "verdict": verdict, "confidence": 0.35}
 
 
-async def _run_audit_all_job(key, skills_manager, names, url, model, headers, teacher, owner):
+async def _run_audit_all_job(
+    key, skills_manager, names, url, model, headers, teacher, owner,
+    auth_manager=None,
+):
     """Background: audit each named skill in sequence, recording progress."""
     import asyncio as _asyncio
     import time as _time
@@ -969,7 +989,10 @@ async def _run_audit_all_job(key, skills_manager, names, url, model, headers, te
             if not sk:
                 continue
             try:
-                res = await _audit_one_skill(skills_manager, sk, url, model, headers, teacher, owner, log)
+                res = await _audit_one_skill(
+                    skills_manager, sk, url, model, headers, teacher, owner, log,
+                    auth_manager=auth_manager,
+                )
             except _asyncio.CancelledError:
                 cancelled = True
                 job["cancel"] = True
@@ -1044,7 +1067,8 @@ def _resolve_audit_models(owner=None):
 
 async def run_scheduled_skill_audit(skills_manager: SkillsManager,
                                     owner: Optional[str] = None,
-                                    max_skills: int = 8) -> dict:
+                                    max_skills: int = 8,
+                                    auth_manager=None) -> dict:
     """Nightly audit pass. Audits the LEAST-recently-audited skills first and
     caps the batch so it rotates through the library over successive nights
     instead of re-checking the same ones every run. Reuses the same job store
@@ -1080,12 +1104,15 @@ async def run_scheduled_skill_audit(skills_manager: SkillsManager,
         "started": _time.time(), "cancel": False,
     }
     logger.info(f"Scheduled skill audit starting: {len(names)} skill(s) (owner={owner or 'all'})")
-    await _run_audit_all_job(key, skills_manager, names, url, model, headers, teacher, owner)
+    await _run_audit_all_job(
+        key, skills_manager, names, url, model, headers, teacher, owner,
+        auth_manager=auth_manager,
+    )
     job = _skill_audit_jobs.get(key, {})
     return {"status": "done", "total": len(names), "results": job.get("results", [])}
 
 
-def setup_skills_routes(skills_manager: SkillsManager) -> APIRouter:
+def setup_skills_routes(skills_manager: SkillsManager, auth_manager=None) -> APIRouter:
     router = APIRouter(prefix="/api/skills", tags=["skills"])
 
     def _owner(request: Request) -> Optional[str]:
@@ -1440,7 +1467,10 @@ def setup_skills_routes(skills_manager: SkillsManager) -> APIRouter:
             "log": [{"type": "skill_test_start", "task": task, "skill": name, "model": model}],
             "verdict": None,
         }
-        _asyncio.create_task(_run_skill_test_job(key, name, md, task, url, model, headers, user, skills_manager))
+        _asyncio.create_task(_run_skill_test_job(
+            key, name, md, task, url, model, headers, user,
+            skills_manager, auth_manager=auth_manager,
+        ))
         return {"ok": True, "status": "running", "skill": name, "model": model}
 
     @router.get("/{skill_id}/test-status")
@@ -1532,7 +1562,10 @@ def setup_skills_routes(skills_manager: SkillsManager) -> APIRouter:
             "results": [], "log": [f"Auditing {len(names)} skill(s) with {model}" + (f"; teacher {teacher[1]}" if teacher else "")],
             "started": _time.time(), "cancel": False,
         }
-        task = _asyncio.create_task(_run_audit_all_job(key, skills_manager, names, url, model, headers, teacher, user))
+        task = _asyncio.create_task(_run_audit_all_job(
+            key, skills_manager, names, url, model, headers, teacher, user,
+            auth_manager=auth_manager,
+        ))
         _skill_audit_jobs[key]["task"] = task
         return {"ok": True, "status": "running", "total": len(names), "model": model}
 

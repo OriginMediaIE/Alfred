@@ -34,6 +34,12 @@ logs/
 *.sqlite
 *.sqlite3
 
+# Encrypted backups. An .ombak carries the full dataset and, when the
+# manifest sets key_included, the instance key alongside it
+# (services/backup_service.py). Never commit one.
+*.ombak
+data.before-restore-*/
+
 # Node
 node_modules/
 services/node_modules/

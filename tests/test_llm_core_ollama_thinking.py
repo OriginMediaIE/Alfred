@@ -163,3 +163,21 @@ class TestThinkSuppression:
             monkeypatch, "http://127.0.0.1:11435/v1/chat/completions", "qwen3:14b"
         )
         assert payload.get("think") is False
+
+    def test_think_false_for_native_ollama_thinking_model(self):
+        payload = llm_core._build_ollama_payload(
+            "om-agent:qwen3.5-9b",
+            [{"role": "user", "content": "use the tool"}],
+            temperature=0.0,
+            max_tokens=128,
+        )
+        assert payload.get("think") is False
+
+    def test_native_ollama_plain_model_keeps_default_thinking_behavior(self):
+        payload = llm_core._build_ollama_payload(
+            "llama3.1:8b",
+            [{"role": "user", "content": "hello"}],
+            temperature=0.0,
+            max_tokens=128,
+        )
+        assert "think" not in payload

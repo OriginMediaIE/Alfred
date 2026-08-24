@@ -40,10 +40,10 @@ def test_tool_modules_cold_import_in_fresh_process(module: str) -> None:
 def test_building_static_registry_does_not_import_runtime_layers() -> None:
     script = r'''
 import sys
-from src.tool_registry import build_builtin_registry
+from src.tool_registry import BUILTIN_TOOL_NAMES, build_builtin_registry
 
 registry = build_builtin_registry()
-assert len(registry) == 77
+assert len(registry) == len(BUILTIN_TOOL_NAMES)
 
 forbidden = (
     "app",

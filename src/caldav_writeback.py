@@ -1,7 +1,7 @@
 """CalDAV write-back: push local create/update/delete out to the remote (#800).
 
 ``src/caldav_sync.py`` is a one-way pull (remote → local). So events created,
-edited, or deleted in Odysseus on a CalDAV-backed calendar only changed the local
+edited, or deleted in OM Automate on a CalDAV-backed calendar only changed the local
 SQLite copy and never reached the server (iCloud/Nextcloud/Radicale/Fastmail) —
 they'd silently disappear on the next pull and never show on the user's phone.
 
@@ -20,7 +20,10 @@ import asyncio
 import logging
 from datetime import timezone
 
+from src.branding import get_brand_config
+
 logger = logging.getLogger(__name__)
+_CALDAV_PRODID = f"-//{get_brand_config().product_name}//CalDAV write-back//EN"
 
 
 def _stable_cal_id(remote_url: str, owner: str = "", account_id: str = "") -> str:
@@ -41,7 +44,7 @@ def build_event_ical(ev: dict) -> str:
     from icalendar.prop import vRecur
 
     cal = Calendar()
-    cal.add("prodid", "-//Odysseus//CalDAV write-back//EN")
+    cal.add("prodid", _CALDAV_PRODID)
     cal.add("version", "2.0")
 
     ve = iEvent()

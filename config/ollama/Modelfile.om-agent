@@ -1,0 +1,10 @@
+# Hardware-safe OM Automate agent profile for a 16 GB Apple Silicon host.
+# Reuses the installed Qwen 3.5 9B weights; creating this tag does not duplicate
+# the model blob. The advertised 256K maximum is intentionally capped because
+# its KV cache competes with OM Automate and macOS for unified memory.
+FROM qwen3.5:latest
+
+PARAMETER num_ctx 32768
+PARAMETER temperature 0.1
+PARAMETER top_p 0.9
+PARAMETER repeat_penalty 1.05

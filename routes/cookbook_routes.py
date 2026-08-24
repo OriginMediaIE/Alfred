@@ -39,12 +39,20 @@ from src.host_docker_access import (
     local_docker_available,
     running_in_container,
 )
+from src.subprocess_lifecycle import (
+    communicate_with_cleanup,
+    process_group_spawn_kwargs,
+)
 from routes.cookbook_output import (
     error_aware_output_tail, classify_dead_download,
     HF_CACHE_COMPLETE_PROBE, HF_CACHE_INCOMPLETE_PROBE,
 )
 
 logger = logging.getLogger(__name__)
+
+_HF_SEARCH_MAX_LENGTH = 200
+_HF_SEARCH_RESULT_LIMIT_MAX = 50
+_HF_SEARCH_POOL_LIMIT_MAX = 750
 
 from routes.cookbook_helpers import (
     _SESSION_ID_RE, _validate_repo_id, _validate_serve_model_id, _validate_include, _validate_token,
@@ -68,7 +76,7 @@ _HF_TOKEN_STATUS_SNIPPET = (
     'echo "[odysseus] HF token: applied"; '
     'else '
     'echo "[odysseus] HF token: NOT SET — gated/private models will be denied. '
-    'Add one in Odysseus Cookbook -> Settings -> HuggingFace Token."; '
+    'Add one in OM Automate Cookbook -> Settings -> HuggingFace Token."; '
     'fi'
 )
 
@@ -357,8 +365,18 @@ def setup_cookbook_routes() -> APIRouter:
     router = APIRouter(tags=["cookbook"])
     _cookbook_state_path = Path(COOKBOOK_STATE_FILE)
     _state_get_cache = {"ts": 0.0, "mtime": 0.0, "value": None}
-    _tasks_status_cache = {"ts": 0.0, "value": None}
-    _tasks_status_inflight = {"task": None}
+    # Keep observational agent reads isolated from the UI's status lane.  A
+    # normal status computation may launch the orphan-adoption sweep, so an
+    # observe-only request must never join that in-flight task or populate its
+    # cache from it.
+    _tasks_status_cache = {
+        False: {"ts": 0.0, "value": None},
+        True: {"ts": 0.0, "value": None},
+    }
+    _tasks_status_inflight = {
+        False: {"task": None},
+        True: {"task": None},
+    }
 
     def _mask_secret(value: str) -> str:
         if not value:
@@ -497,7 +515,7 @@ def setup_cookbook_routes() -> APIRouter:
                 "MLX-LM tried to quantize an already-quantized DeepSeek switch layer.",
                 [
                     {"label": "relaunch from the cached local Hugging Face snapshot path on this Mac", "op": "manual"},
-                    {"label": "Odysseus now rewrites MLX repo-id launches to a cached snapshot when one exists", "op": "manual"},
+                    {"label": "OM Automate now rewrites MLX repo-id launches to a cached snapshot when one exists", "op": "manual"},
                 ],
             ),
             # System build deps come BEFORE the generic llama.cpp catch-all
@@ -757,81 +775,6 @@ def setup_cookbook_routes() -> APIRouter:
 
     def _cookbook_ssh_key_path() -> Path:
         return _cookbook_ssh_dir() / "id_ed25519"
-
-    def _ssh_known_host_name(host: str) -> str:
-        """Return the host part OpenSSH stores in known_hosts.
-
-        Cookbook accepts `user@host` for convenience, but known_hosts entries
-        are keyed by host, not username.
-        """
-        return (host or "").rsplit("@", 1)[-1]
-
-    def _known_hosts_targets(host: str, ssh_port: str | None = None) -> list[str]:
-        name = _ssh_known_host_name(host)
-        targets = [name]
-        if ssh_port and ssh_port != "22":
-            targets.insert(0, f"[{name}]:{ssh_port}")
-        return [t for t in targets if t]
-
-    def _ssh_host_key_changed(stderr_txt: str) -> bool:
-        text = stderr_txt or ""
-        return (
-            "REMOTE HOST IDENTIFICATION HAS CHANGED" in text
-            or "Host key verification failed" in text and "Offending" in text
-        )
-
-    async def _repair_cookbook_known_host(host: str, ssh_port: str | None = None) -> tuple[bool, str]:
-        """Refresh Odysseus' own known_hosts entry for a validated Cookbook host.
-
-        This is intentionally scoped to Cookbook SSH targets and only called
-        after OpenSSH reports a changed host key. It fixes container-local
-        known_hosts drift without asking the user to run ssh-keygen manually.
-        """
-        known_hosts = _cookbook_ssh_dir() / "known_hosts"
-        known_hosts.parent.mkdir(parents=True, exist_ok=True)
-        known_hosts.touch(mode=0o600, exist_ok=True)
-        safe_chmod(known_hosts, 0o600)
-
-        ssh_keygen = which_tool("ssh-keygen") or "ssh-keygen"
-        ssh_keyscan = which_tool("ssh-keyscan") or "ssh-keyscan"
-        removed_chunks: list[str] = []
-        for target in _known_hosts_targets(host, ssh_port):
-            proc = await asyncio.create_subprocess_exec(
-                ssh_keygen,
-                "-f",
-                str(known_hosts),
-                "-R",
-                target,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await proc.communicate()
-            removed_chunks.append((stdout or stderr).decode("utf-8", errors="replace").strip())
-
-        scan_args = [ssh_keyscan, "-H", "-t", "ed25519,ecdsa,rsa"]
-        if ssh_port and ssh_port != "22":
-            scan_args.extend(["-p", ssh_port])
-        scan_args.append(_ssh_known_host_name(host))
-        proc = await asyncio.create_subprocess_exec(
-            *scan_args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=8)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.communicate()
-            return False, "ssh-keyscan timed out while refreshing known_hosts"
-        if proc.returncode != 0 or not stdout.strip():
-            detail = (stderr or stdout).decode("utf-8", errors="replace").strip()
-            return False, detail or "ssh-keyscan returned no host keys"
-        with known_hosts.open("ab") as f:
-            if known_hosts.stat().st_size > 0:
-                f.write(b"\n")
-            f.write(stdout.strip() + b"\n")
-        safe_chmod(known_hosts, 0o600)
-        return True, "\n".join(chunk for chunk in removed_chunks if chunk) or "known_hosts refreshed"
 
     def _read_cookbook_public_key() -> str:
         pub = _cookbook_ssh_key_path().with_suffix(".pub")
@@ -1343,7 +1286,13 @@ def setup_cookbook_routes() -> APIRouter:
         return {"ok": True, "session_id": session_id, "remote": remote or "local"}
 
     @router.get("/api/model/cached")
-    async def model_cached(request: Request, host: str | None = None, model_dir: str | None = None, ssh_port: str | None = None, platform: str | None = None):
+    async def model_cached(
+        request: Request,
+        host: str | None = None,
+        model_dir: str | None = None,
+        ssh_port: str | None = None,
+        platform: str | None = None,
+    ):
         """List cached models. Scans HF cache + optional model directory."""
         require_admin(request)
         # Validate shell-bound inputs, matching the sibling list_gpus endpoint —
@@ -1351,7 +1300,6 @@ def setup_cookbook_routes() -> APIRouter:
         # unvalidated value (e.g. "x'; rm -rf ~ #") would be command injection.
         host = validate_remote_host(host)
         ssh_port = validate_ssh_port(ssh_port)
-        TMUX_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
         model_dirs = []
         if model_dir:
@@ -1360,27 +1308,44 @@ def setup_cookbook_routes() -> APIRouter:
                 if d:
                     if d.startswith(("home/", "mnt/", "media/", "data/", "opt/", "srv/", "var/")):
                         d = "/" + d
-                    model_dirs.append(d)
+                    validated_dir = _validate_local_dir(d)
+                    if validated_dir:
+                        model_dirs.append(validated_dir)
         paths_code = _cached_model_scan_script(model_dirs)
-
-        scan_py = TMUX_LOG_DIR / "scan_cache.py"
-        scan_py.write_text(paths_code, encoding="utf-8")
 
         async def _run_cached_scan_once():
             if host:
-                _ssh_opts = "-o BatchMode=yes -o ConnectTimeout=8 -o ServerAliveInterval=4 -o ServerAliveCountMax=1 "
-                _pf = f"-p {ssh_port} " if ssh_port and ssh_port != "22" else ""
-                if platform == "windows":
-                    # Windows: use 'python' and pipe via stdin with double-quote wrapping
-                    cmd = f'ssh {_ssh_opts}{_pf}{host} "python -" < \'{scan_py}\''
-                else:
-                    cmd = f"ssh {_ssh_opts}{_pf}{host} 'python3 -' < '{scan_py}'"
-                proc = await asyncio.create_subprocess_shell(
-                    cmd,
+                ssh_args = [
+                    "ssh",
+                    "-o", "BatchMode=yes",
+                    # This endpoint is an inventory read.  Override user SSH
+                    # configuration that could otherwise add/rotate host keys
+                    # or create a persistent control socket as a side effect.
+                    "-o", "StrictHostKeyChecking=yes",
+                    "-o", "UpdateHostKeys=no",
+                    "-o", "ControlMaster=no",
+                    "-o", "ControlPath=none",
+                    "-o", "ControlPersist=no",
+                    "-o", "PermitLocalCommand=no",
+                    "-o", "ConnectTimeout=8",
+                    "-o", "ServerAliveInterval=4",
+                    "-o", "ServerAliveCountMax=1",
+                ]
+                if ssh_port and ssh_port != "22":
+                    ssh_args.extend(["-p", ssh_port])
+                remote_python = "python" if platform == "windows" else "python3"
+                proc = await asyncio.create_subprocess_exec(
+                    *ssh_args,
+                    host,
+                    remote_python,
+                    "-",
+                    stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=str(Path.home()),
+                    **process_group_spawn_kwargs(),
                 )
+                communicate_input = paths_code.encode("utf-8")
             else:
                 # LOCAL scan: use sys.executable (the venv Python Odysseus is already
                 # running under) — it's guaranteed real Python on all platforms.
@@ -1394,25 +1359,22 @@ def setup_cookbook_routes() -> APIRouter:
                     or which_tool("py") or "python"
                 )
                 proc = await asyncio.create_subprocess_exec(
-                    local_py, str(scan_py),
+                    local_py, "-c", paths_code,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=str(Path.home()),
+                    **process_group_spawn_kwargs(),
                 )
-            return await asyncio.wait_for(proc.communicate(), timeout=60), proc.returncode
+                communicate_input = None
+            return await communicate_with_cleanup(
+                proc,
+                input=communicate_input,
+                timeout=60,
+            ), proc.returncode
 
         (stdout_b, stderr_b), returncode = await _run_cached_scan_once()
         stderr_txt = stderr_b.decode(errors="replace").strip()
         stdout_txt = stdout_b.decode(errors="replace").strip()
-        if host and returncode != 0 and _ssh_host_key_changed(stderr_txt):
-            ok, detail = await _repair_cookbook_known_host(host, ssh_port)
-            if ok:
-                logger.info("Repaired Cookbook known_hosts for %s after host-key-change scan failure", host)
-                (stdout_b, stderr_b), returncode = await _run_cached_scan_once()
-                stderr_txt = stderr_b.decode(errors="replace").strip()
-                stdout_txt = stdout_b.decode(errors="replace").strip()
-            else:
-                logger.warning("Failed to repair Cookbook known_hosts for %s: %s", host, detail[:300])
         if returncode != 0:
             msg = stderr_txt or f"Cached model scan failed with exit code {returncode}"
             logger.warning(f"Cached model scan failed host={host or 'local'} rc={returncode}: {msg[:500]}")
@@ -2168,7 +2130,7 @@ def setup_cookbook_routes() -> APIRouter:
                 runner_lines.append('    mkdir -p ~/bin')
                 runner_lines.append('    cat > ~/bin/llama-server <<\'_ODY_LLAMA_SHIM_EOF\'')
                 runner_lines.append('#!/usr/bin/env bash')
-                runner_lines.append('# Auto-generated by Odysseus Cookbook: a `llama-server` lookalike')
+                runner_lines.append('# Auto-generated by OM Automate Cookbook: a `llama-server` lookalike')
                 runner_lines.append('# that translates the native CLI to `python -m llama_cpp.server`.')
                 runner_lines.append('# Lets cookbook-generated launch commands run unchanged on hosts')
                 runner_lines.append('# where only the pip llama-cpp-python package is installed.')
@@ -2242,7 +2204,7 @@ def setup_cookbook_routes() -> APIRouter:
                 runner_lines.append('fi')
                 runner_lines.append('ODYSSEUS_OLLAMA_URL="http://${ODYSSEUS_OLLAMA_HOST}:${ODYSSEUS_OLLAMA_PORT}"')
                 if remote and _ollama_host in ("0.0.0.0", "::"):
-                    runner_lines.append('echo "[odysseus] WARNING: remote Ollama will bind to ${ODYSSEUS_OLLAMA_HOST}:${ODYSSEUS_OLLAMA_PORT} so Odysseus can reach it from this host."')
+                    runner_lines.append('echo "[odysseus] WARNING: remote Ollama will bind to ${ODYSSEUS_OLLAMA_HOST}:${ODYSSEUS_OLLAMA_PORT} so OM Automate can reach it from this host."')
                     runner_lines.append('echo "[odysseus] Ollama has no built-in authentication; expose this only on a trusted LAN/VPN or provide an explicit OLLAMA_HOST with your own access controls."')
                 runner_lines.append('echo "Starting ollama server on ${ODYSSEUS_OLLAMA_HOST}:${ODYSSEUS_OLLAMA_PORT}..."')
                 runner_lines.append('OLLAMA_HOST="${ODYSSEUS_OLLAMA_HOST}:${ODYSSEUS_OLLAMA_PORT}" ollama serve')
@@ -2427,7 +2389,7 @@ def setup_cookbook_routes() -> APIRouter:
                 runner_lines.append('                utils_path = Path(mlx_utils.__file__)')
                 runner_lines.append('                utils_text = utils_path.read_text()')
                 runner_lines.append('                utils_needle = \'        def class_predicate(p, m):\\n            # Handle custom per layer quantizations\\n            if p in config["quantization"]:\\n                return config["quantization"][p]\\n            if not hasattr(m, "to_quantized"):\\n                return False\\n            return f"{p}.scales" in weights\\n\'')
-                runner_lines.append('                utils_repl = \'        def class_predicate(p, m):\\n            # Odysseus: DeepSeek-V4 MXFP4 switch layers may already be quantized.\\n            if type(m).__name__ == "QuantizedSwitchLinear":\\n                return False\\n            # Handle custom per layer quantizations\\n            if p in config["quantization"]:\\n                return config["quantization"][p]\\n            if not hasattr(m, "to_quantized"):\\n                return False\\n            return f"{p}.scales" in weights\\n\'')
+                runner_lines.append('                utils_repl = \'        def class_predicate(p, m):\\n            # OM Automate: DeepSeek-V4 MXFP4 switch layers may already be quantized.\\n            if type(m).__name__ == "QuantizedSwitchLinear":\\n                return False\\n            # Handle custom per layer quantizations\\n            if p in config["quantization"]:\\n                return config["quantization"][p]\\n            if not hasattr(m, "to_quantized"):\\n                return False\\n            return f"{p}.scales" in weights\\n\'')
                 runner_lines.append('                if utils_repl not in utils_text and utils_needle in utils_text:')
                 runner_lines.append('                    bak = utils_path.with_suffix(utils_path.suffix + ".odysseus_bak")')
                 runner_lines.append('                    if not bak.exists(): bak.write_text(utils_text)')
@@ -2436,7 +2398,7 @@ def setup_cookbook_routes() -> APIRouter:
                 runner_lines.append('                dsv4_path = Path(dsv4.__file__)')
                 runner_lines.append('                dsv4_text = dsv4_path.read_text()')
                 runner_lines.append('                dsv4_needle = \'            for sub in ("attn", "ffn"):\\n                for p in ("fn", "base", "scale"):\\n                    nk = nk.replace(f".hc_{sub}_{p}", f".hc_{sub}.{p}")\\n            for wo, wn in w_remap.items():\\n\'')
-                runner_lines.append('                dsv4_repl = \'            for sub in ("attn", "ffn"):\\n                for p in ("fn", "base", "scale"):\\n                    nk = nk.replace(f".hc_{sub}_{p}", f".hc_{sub}.{p}")\\n            # Odysseus: normalize alternate hyper-connection key aliases.\\n            nk = nk.replace(".attn_hc.", ".hc_attn.")\\n            nk = nk.replace(".ffn_hc.", ".hc_ffn.")\\n            for wo, wn in w_remap.items():\\n\'')
+                runner_lines.append('                dsv4_repl = \'            for sub in ("attn", "ffn"):\\n                for p in ("fn", "base", "scale"):\\n                    nk = nk.replace(f".hc_{sub}_{p}", f".hc_{sub}.{p}")\\n            # OM Automate: normalize alternate hyper-connection key aliases.\\n            nk = nk.replace(".attn_hc.", ".hc_attn.")\\n            nk = nk.replace(".ffn_hc.", ".hc_ffn.")\\n            for wo, wn in w_remap.items():\\n\'')
                 runner_lines.append('                if dsv4_repl not in dsv4_text and dsv4_needle in dsv4_text:')
                 runner_lines.append('                    bak = dsv4_path.with_suffix(dsv4_path.suffix + ".odysseus_bak")')
                 runner_lines.append('                    if not bak.exists(): bak.write_text(dsv4_text)')
@@ -3319,25 +3281,53 @@ def setup_cookbook_routes() -> APIRouter:
             return {"ok": False, "error": str(e)}
 
     @router.get("/api/cookbook/hf-latest")
-    async def hf_latest(vram_gb: float = 0, limit: int = 10, pipeline: str = "text-generation", owner: str = Depends(require_user)):
-        """Fetch latest HuggingFace models, filtered by what fits in available VRAM.
+    async def hf_latest(
+        vram_gb: float = 0,
+        limit: int = 10,
+        pipeline: str = "text-generation",
+        search: str = "",
+        owner: str = Depends(require_user),
+    ):
+        """Fetch or search HuggingFace models, filtered by available VRAM.
 
         vram_gb: total available VRAM in GB. 0 = no filter (return everything).
-        limit:   how many models to return (default 10).
+        limit:   how many models to return (1-50, default 10).
         pipeline: HF pipeline_tag filter (text-generation, text-to-image, etc.).
+        search: bounded HuggingFace repository search query.
         """
         import re
         import httpx
 
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            raise HTTPException(status_code=422, detail="limit must be an integer")
+        if not 1 <= limit <= _HF_SEARCH_RESULT_LIMIT_MAX:
+            raise HTTPException(
+                status_code=422,
+                detail=f"limit must be between 1 and {_HF_SEARCH_RESULT_LIMIT_MAX}",
+            )
+        if not isinstance(search, str):
+            raise HTTPException(status_code=422, detail="search must be a string")
+        search = search.strip()
+        if len(search) > _HF_SEARCH_MAX_LENGTH:
+            raise HTTPException(
+                status_code=422,
+                detail=f"search must be at most {_HF_SEARCH_MAX_LENGTH} characters",
+            )
+
         # Fetch a larger pool so we have enough to filter from (we drop ~80%)
-        pool_size = max(limit * 15, 100)
-        url = (
-            "https://huggingface.co/api/models"
-            f"?sort=trendingScore&direction=-1&limit={pool_size}&filter={pipeline}"
-        )
+        pool_size = min(max(limit * 15, 100), _HF_SEARCH_POOL_LIMIT_MAX)
+        url = "https://huggingface.co/api/models"
+        request_params = {
+            "sort": "trendingScore",
+            "direction": -1,
+            "limit": pool_size,
+            "filter": pipeline,
+        }
+        if search:
+            request_params["search"] = search
         try:
             async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.get(url)
+                resp = await client.get(url, params=request_params)
                 if resp.status_code != 200:
                     return {"models": [], "error": f"HF API HTTP {resp.status_code}"}
                 raw = resp.json()
@@ -3997,36 +3987,46 @@ def setup_cookbook_routes() -> APIRouter:
         return normalized
 
     @router.get("/api/cookbook/tasks/status")
-    async def cookbook_tasks_status(request: Request):
+    async def cookbook_tasks_status(request: Request, observe_only: bool = False):
         """Check status of all active cookbook tmux sessions.
 
         Critical: every subprocess.run inside this handler is a sync blocking
         call that — when this was a plain async def — froze the entire server
         event loop. Now the whole body runs in a worker thread via
-        asyncio.to_thread so other requests stay responsive."""
+        asyncio.to_thread so other requests stay responsive.
+
+        ``observe_only`` is used by read-only agent tools.  It suppresses the
+        orphan-adoption sweep, whose discovery path can persist new tasks.
+        """
         require_admin(request)
+        cache_key = bool(observe_only)
+        cache = _tasks_status_cache[cache_key]
+        inflight_slot = _tasks_status_inflight[cache_key]
         now = time.monotonic()
-        cached = _tasks_status_cache.get("value")
-        if cached is not None and now - float(_tasks_status_cache.get("ts") or 0) < 2.0:
+        cached = cache.get("value")
+        if cached is not None and now - float(cache.get("ts") or 0) < 2.0:
             return cached
-        inflight = _tasks_status_inflight.get("task")
+        inflight = inflight_slot.get("task")
         if inflight and not inflight.done():
             return await inflight
 
         async def _compute():
-            data = await asyncio.to_thread(_cookbook_tasks_status_sync)
-            _tasks_status_cache.update({"ts": time.monotonic(), "value": data})
+            data = await asyncio.to_thread(
+                _cookbook_tasks_status_sync,
+                observe_only,
+            )
+            cache.update({"ts": time.monotonic(), "value": data})
             return data
 
         task = asyncio.create_task(_compute())
-        _tasks_status_inflight["task"] = task
+        inflight_slot["task"] = task
         try:
             return await task
         finally:
-            if _tasks_status_inflight.get("task") is task:
-                _tasks_status_inflight["task"] = None
+            if inflight_slot.get("task") is task:
+                inflight_slot["task"] = None
 
-    def _cookbook_tasks_status_sync():
+    def _cookbook_tasks_status_sync(observe_only: bool = False):
         import subprocess
 
         def _pick_download_progress(lines: list[str]) -> str:
@@ -4125,10 +4125,11 @@ def setup_cookbook_routes() -> APIRouter:
         # they show up in the UI on the next poll without anyone having
         # to remember to call adopt_served_model. Rate-limited via the
         # module-level _last_orphan_sweep so we don't SSH every 3s.
-        try:
-            _maybe_sweep_orphans(tasks, state)
-        except Exception as _sweep_e:
-            logger.warning(f"orphan sweep failed (non-fatal): {_sweep_e!r}")
+        if not observe_only:
+            try:
+                _maybe_sweep_orphans(tasks, state)
+            except Exception as _sweep_e:
+                logger.warning(f"orphan sweep failed (non-fatal): {_sweep_e!r}")
 
         results = []
         for task in tasks:

@@ -1,28 +1,39 @@
 #!/bin/bash
-# Odysseus — one-command quick start for macOS (Apple Silicon).
+# OM Automate — one-command native quick start for macOS.
 #
 #   ./start-macos.sh
 #
-# Installs everything Odysseus needs via Homebrew, sets up a local Python
+# Installs OM Automate's native dependencies via Homebrew, sets up a local Python
 # environment, and launches the app — so a generic Mac user can run it without
 # knowing anything about venvs, pip, or uvicorn. Safe to re-run; it skips work
 # that's already done.
 #
-# Why native (not Docker): Cookbook serves models on whatever machine Odysseus
-# runs on, and Docker on macOS is a Linux VM with no access to the Metal GPU.
+# Why native (not Docker): Cookbook serves models on the host running the app,
+# while Docker on macOS is a Linux VM with no access to the Metal GPU.
 # Running natively lets Cookbook detect and use your Mac's GPU.
 set -e
+umask 077
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_DIR"
+
+# Product copy comes from the same validated PWA manifest used by the web UI
+# and native Python launcher. plutil is built into every supported macOS.
+BRAND_MANIFEST="$REPO_DIR/static/manifest.json"
+PRODUCT_NAME="$(/usr/bin/plutil -extract om_automate.product_name raw -o - "$BRAND_MANIFEST" 2>/dev/null)" || {
+    echo "✗ Brand configuration is missing or invalid: $BRAND_MANIFEST"
+    exit 1
+}
 
 # Load .env so APP_PORT and APP_BIND are available without re-typing them on
 # the command line every run — consistent with how app.py reads them via
 # python-dotenv. Variables already set in the shell take priority over .env.
 if [ -f .env ]; then
+    chmod 600 .env 2>/dev/null || true
     while IFS='=' read -r key value; do
         [[ "$key" =~ ^[[:space:]]*# ]] && continue
         [[ -z "${key// }" ]] && continue
+        [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
         value="${value%%#*}"
         value="${value#"${value%%[![:space:]]*}"}"
         value="${value%"${value##*[![:space:]]}"}"
@@ -34,6 +45,8 @@ fi
 # values (APP_PORT / APP_BIND), then built-in defaults.
 PORT="${ODYSSEUS_PORT:-${APP_PORT:-7860}}"   # 7860, not 7000 — macOS AirPlay Receiver holds 7000.
 HOST="${ODYSSEUS_HOST:-${APP_BIND:-127.0.0.1}}" # Set APP_BIND=0.0.0.0 in .env for LAN/Tailscale access.
+export APP_PORT="$PORT"
+export APP_BIND="$HOST"
 PROBE_HOST="$HOST"
 if [ "$PROBE_HOST" = "0.0.0.0" ] || [ "$PROBE_HOST" = "::" ]; then
     PROBE_HOST="127.0.0.1"
@@ -42,7 +55,7 @@ fi
 # Friendly message on any failure — re-running is safe (every step is idempotent).
 trap 'echo; echo "✗ Setup failed above. It is safe to re-run ./start-macos.sh."; exit 1' ERR
 
-echo "▶ Odysseus quick start for macOS"
+echo "▶ $PRODUCT_NAME native quick start for macOS"
 
 # Fail fast if the port is already taken (e.g. a previous run still running).
 if (exec 3<>"/dev/tcp/$PROBE_HOST/$PORT") 2>/dev/null; then
@@ -136,13 +149,13 @@ if [ ! -x "$VENV_PY" ] || ! "$VENV_PY" -m pip --version >/dev/null 2>&1; then
     echo "▶ Creating Python environment…"
     "$PY" -m venv venv
 fi
-REQ_HASH="$(md5 -q requirements.txt 2>/dev/null || md5sum requirements.txt | cut -d' ' -f1)"
-REQ_HASH_FILE="venv/.requirements_hash"
+REQ_HASH="$(md5 -q requirements-om.lock 2>/dev/null || md5sum requirements-om.lock | cut -d' ' -f1)"
+REQ_HASH_FILE="venv/.requirements-om-lock-hash"
 if [ ! -f "$REQ_HASH_FILE" ] || [ "$REQ_HASH" != "$(cat "$REQ_HASH_FILE" 2>/dev/null)" ]; then
   echo "▶ Installing Python packages (first run downloads a few — can take a few minutes)…"
   "$VENV_PY" -m pip install --quiet --upgrade pip
   # Not --quiet: this is the slow step, so show progress (and any real errors).
-  "$VENV_PY" -m pip install -r requirements.txt
+  "$VENV_PY" -m pip install -r requirements-om.lock
   echo "$REQ_HASH" > "$REQ_HASH_FILE"
 else
   echo "▶ Python packages up to date — skipping install"
@@ -154,13 +167,13 @@ fi
 if "$VENV_PY" -m pip show chromadb-client >/dev/null 2>&1; then
     echo "▶ Cleaning up conflicting chromadb-client package…"
     "$VENV_PY" -m pip uninstall -y chromadb-client
-    "$VENV_PY" -m pip install --force-reinstall chromadb
+    "$VENV_PY" -m pip install --force-reinstall "chromadb==1.5.9"
 fi
 
 # 4. First-run setup: creates data dirs and prints an initial admin password
 #    the first time (idempotent — does nothing if already set up). Suppress its
 #    manual run hint — we launch the server ourselves just below.
-echo "▶ Preparing Odysseus…"
+echo "▶ Preparing $PRODUCT_NAME…"
 ODYSSEUS_SKIP_RUN_HINT=1 ./venv/bin/python setup.py
 
 # Local provider bootstrap.
@@ -169,9 +182,13 @@ ODYSSEUS_SKIP_RUN_HINT=1 ./venv/bin/python setup.py
 #     server on the port next to Ollama, since the default port is 11434 and that's busy (because of ollama).
 MACHINE_ARCH="$(uname -m)"
 APFEL_PID=""
+RUNTIME_DATA_DIR="${ODYSSEUS_DATA_DIR:-$PWD/data}"
+RUNTIME_LOG_DIR="$RUNTIME_DATA_DIR/logs"
+mkdir -p "$RUNTIME_LOG_DIR"
+chmod 700 "$RUNTIME_DATA_DIR" "$RUNTIME_LOG_DIR" 2>/dev/null || true
 if [ "$MACHINE_ARCH" = "arm64" ]; then
     if command -v apfel >/dev/null 2>&1; then
-        APFEL_LOG="${TMPDIR:-/tmp}/odysseus-apfel.log"
+        APFEL_LOG="$RUNTIME_LOG_DIR/apfel.log"
         echo "▶ Starting Apfel server in the background on port 11435…"
         echo "  logging to $APFEL_LOG"
         nohup apfel --serve --port 11435 >"$APFEL_LOG" 2>&1 &
@@ -203,10 +220,10 @@ if (exec 3<>"/dev/tcp/127.0.0.1/$CHROMA_PORT") 2>/dev/null; then
 elif [ -z "$CHROMA_BIND" ]; then
     echo "▶ CHROMADB_HOST=$CHROMA_HOST is remote - not starting a local ChromaDB."
 elif [ -x "$CHROMA_BIN" ]; then
-    CHROMA_LOG="${TMPDIR:-/tmp}/odysseus-chromadb.log"
+    CHROMA_LOG="$RUNTIME_LOG_DIR/chromadb.log"
     echo "▶ Starting ChromaDB in the background on $CHROMA_BIND:$CHROMA_PORT…"
     echo "  logging to $CHROMA_LOG"
-    nohup "$CHROMA_BIN" run --host "$CHROMA_BIND" --port "$CHROMA_PORT" --path "$PWD/data/chroma" >"$CHROMA_LOG" 2>&1 &
+    nohup "$CHROMA_BIN" run --host "$CHROMA_BIND" --port "$CHROMA_PORT" --path "$RUNTIME_DATA_DIR/chroma" >"$CHROMA_LOG" 2>&1 &
     CHROMA_PID=$!
 else
     echo "▶ ChromaDB CLI not found in venv; skipping (tool index will be degraded)."
@@ -238,7 +255,7 @@ if [ -z "$ODYSSEUS_NO_OPEN" ] && command -v open >/dev/null 2>&1; then
             if (exec 3<>"/dev/tcp/$PROBE_HOST/$PORT") 2>/dev/null; then
                 printf '\n'
                 printf '  ┌────────────────────────────────────────────┐\n'
-                printf '  │  ✓ Odysseus is ready — opening your browser  │\n'
+                printf '  │  ✓ %s is ready — opening your browser       │\n' "$PRODUCT_NAME"
                 printf '  │     %-40s │\n' "$URL"
                 printf '  │     (Press Ctrl+C in this window to stop)    │\n'
                 printf '  └────────────────────────────────────────────┘\n\n'
@@ -253,11 +270,22 @@ fi
 
 # Setup is done — drop the setup-failure handler, and clean up the background
 # opener when the server exits or the user presses Ctrl+C.
+cleanup_children() {
+    for pid in "$POLLER_PID" "$APFEL_PID" "$CHROMA_PID"; do
+        [ -n "$pid" ] || continue
+        kill "$pid" 2>/dev/null || true
+    done
+    for pid in "$POLLER_PID" "$APFEL_PID" "$CHROMA_PID"; do
+        [ -n "$pid" ] || continue
+        wait "$pid" 2>/dev/null || true
+    done
+}
+
 trap - ERR
-trap '[ -n "$POLLER_PID" ] && kill "$POLLER_PID" 2>/dev/null; [ -n "$APFEL_PID" ] && kill "$APFEL_PID" 2>/dev/null; [ -n "$CHROMA_PID" ] && kill "$CHROMA_PID" 2>/dev/null' EXIT INT TERM
+trap cleanup_children EXIT INT TERM
 
 echo
-echo "▶ Starting Odysseus — it will open in your browser at $URL"
+echo "▶ Starting $PRODUCT_NAME — it will open in your browser at $URL"
 if [ -n "$TAILSCALE_URL" ]; then
     echo "  Tailscale/LAN URL: $TAILSCALE_URL"
 fi

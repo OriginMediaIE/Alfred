@@ -62,7 +62,7 @@ Do not bind the current app directly to a public interface. For any access beyon
 5. validate proxy/client-address handling so a remote caller is never treated as localhost;
 6. keep raw provider/service ports private;
 7. test login, logout, session, CORS/CSRF, rate limits, OAuth callbacks, SSRF, and webhooks through the actual proxy;
-8. prove backup/restore and incident rollback before opening access.
+8. prove encrypted v2 backup/restore and incident rollback before opening access.
 
 This is a hardening baseline, not a statement that public deployment is supported.
 
@@ -88,20 +88,44 @@ Never publish the generated password in logs, screenshots, issues, chat, or shel
 
 ### 4.2 Damaged authentication store
 
-The current authentication loader can treat an unreadable/corrupt existing `auth.json` as unconfigured. This can expose first-admin setup.
+An `auth.json` that exists but cannot be parsed puts the instance into a
+**recovery-only** state. It is never treated as a clean first boot.
 
-If a configured installation shows first-run setup:
+**How it presents.** The application starts and serves liveness, but:
 
-1. remove it from network access immediately;
-2. do not create a new administrator;
-3. preserve `auth.json`, logs, file permissions, and a read-only copy for investigation;
+- `POST /api/auth/setup` returns **503** with code `auth_recovery_required`
+  (`routes/auth_routes.py:109`);
+- `GET /api/ready` returns **503** with check `auth_store` = `failed`, code
+  `auth_recovery_required` (`src/readiness.py`);
+- the log carries a single `CRITICAL` line, `"Auth store requires local recovery"`,
+  with no store contents.
+
+The damaged file is **left untouched** so it can be investigated and restored.
+
+**If you see this state:**
+
+1. remove the instance from network access;
+2. do not attempt to create a new administrator — the attempt is refused, and
+   repeated attempts only obscure the audit trail;
+3. preserve `auth.json`, `sessions.json`, logs, and file permissions; take a
+   read-only copy before touching anything;
 4. stop the application;
-5. verify storage, ownership, permissions, disk health, and the last known-good backup;
-6. restore the matched protected authentication/data set in isolation;
-7. rotate sessions, API tokens, provider credentials, and passwords if unauthorized access may have occurred;
-8. reopen only after login/ownership and log review pass.
+5. verify storage, ownership, permissions, disk health, and the last known-good
+   backup — a damaged store is often the first visible symptom of failing disk or
+   an interrupted write, not of attack;
+6. restore the matched authentication/data set in isolation (see §12), so the
+   auth store and the data it authorizes come from the same point in time;
+7. rotate sessions, API tokens, provider credentials, and passwords if
+   unauthorized access cannot be excluded;
+8. reopen only after login, ownership, and log review pass.
 
-The target release must fail closed instead of reopening setup.
+**Never** delete `auth.json` to "get back in". That converts a recoverable
+incident into an unauthenticated first-admin claim on a populated data set, which
+is precisely the failure mode this state exists to prevent (`OM-BUG-003`).
+
+Restoring a verified backup is the supported route back to service. If no backup
+exists, the instance's data can be preserved but its accounts cannot — treat that
+as data loss and record it.
 
 ## 5. User management
 

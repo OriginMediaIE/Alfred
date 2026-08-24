@@ -1,5 +1,319 @@
 # OM Automate Project Status
 
+## 2026-08-21 - Personal PrivateOS Phase 5 implementation complete
+
+### Outcome
+
+- Phase 5 implementation is complete on the current Apple Silicon Mac native
+  profile. The single remaining PrivateOS goal is the required seven-day
+  personal-use soak and release sign-off.
+- Portable encrypted backup, database preflight, compensated restart restore,
+  completed-restore rollback, fresh-install rehearsal, local release checks,
+  synthetic demo data, and a scoped mobile companion are implemented.
+- The current responsive local web shell remains the desktop milestone; no
+  Tauri wrapper is required for this release.
+
+### Verification
+
+- Fresh-install rehearsal restored and manifest-verified 32 files and 6 SQLite
+  databases in an empty temporary data directory.
+- Final Phase 5 backup/release/demo/companion/migration/auth/privacy focused
+  gate: **51 passed**. The broader security selection passed 182 tests with two
+  environment/order artifacts subsequently isolated; the ordering fixture was
+  fixed and the affected security file passed 101 tests outside its socket case.
+- Restricted full suite: **4,970 passed, 20 environment-blocked socket/DNS
+  failures, 3 skipped, 10 warnings in 172.07 seconds**. Socket-enabled rerun of
+  all affected files: **230 passed, 0 failed, 1 warning in 3.89 seconds**.
+- Live liveness is healthy. Readiness is usable/degraded only because optional
+  ChromaDB is offline. Companion unauthenticated access returns 401.
+
+### Remaining acceptance evidence
+
+- Seven consecutive days of real personal use are mandatory and currently have
+  zero recorded days. Use `scripts/privateos_release_check.py --record-soak`
+  once after each genuine daily workflow; synthetic dates are not release proof.
+- Real provider credentials and personal media remain operator-owned acceptance
+  work. No Corporate or family scope is part of this release.
+
+## 2026-08-21 - Personal PrivateOS Phase 4 complete
+
+### Outcome
+
+- Phase 4, Memory, Meetings, Vault, And Routines, is complete for the current
+  Apple Silicon Mac native profile. The canonical next goal is Phase 5,
+  PrivateOS Completion On Current System.
+- Knowledge now provides owner-scoped durable ingestion, hybrid lexical/vector
+  retrieval, citations, explicit insufficient-evidence responses, source
+  rebuild/deletion, derivative cleanup, sensitivity, and stale/expiry handling.
+- Memory suggestions retain source provenance and support suggested, approved,
+  rejected, expired, edited, sensitive, and deleted states. Incognito content
+  is rejected at the durable Knowledge memory boundary.
+- Meetings cover consent-gated media, validated uploads, durable local
+  transcription and analysis jobs, cancellation/recovery, transcript revisions,
+  speaker mapping, source-span claims, approved task creation, and explicit
+  transcript promotion to Knowledge.
+- Document Vault analysis records deterministic classification evidence,
+  extracted expiry candidates, obligation excerpts with source offsets,
+  sensitivity, review state, and revision-safe user corrections.
+- Six installable routines cover renewals, follow-ups, weekly review, inbox
+  triage, backup reminders, and meeting follow-up. Definitions and run history
+  survive restart; successful runs report template-estimated attention returned.
+
+### Verification
+
+- Phase 4 focused workflow gate: **71 passed**. Expanded Knowledge, memory,
+  meeting, automation, Life, privacy, and vault gate: **165 passed**.
+- Restricted full suite: **4,960 passed, 20 environment-blocked socket/DNS
+  failures, 3 skipped, 10 warnings in 170.04 seconds**. Socket-enabled rerun of
+  every affected file: **65 passed, 0 failed, 1 warning in 3.91 seconds**.
+- JavaScript syntax and Python compilation passed.
+- Isolated browser smoke verified the Document Vault and all six routine
+  templates. At 390 x 844, body and dialog widths remained 390 px with no
+  horizontal overflow; the browser console contained zero errors.
+- The completed application is running at `http://127.0.0.1:7000`.
+
+### Remaining external evidence
+
+- ChromaDB is offline, so retrieval uses the tested local lexical/hash-vector
+  path and reports optional vector infrastructure as degraded.
+- No personal media was transcribed and no transcription-quality claim is made.
+  Microphone/browser permissions and real long-form media remain operator
+  acceptance work with consented synthetic or dedicated test material.
+- The Phase 5 one-week daily-use soak, fresh-install restore rehearsal, iPhone
+  access path, and complete security/demo acceptance remain outstanding.
+
+## 2026-08-21 - Personal PrivateOS Phase 3 complete
+
+### Outcome
+
+- Phase 3, Personal Operating Loop, is complete for the current Apple Silicon
+  Mac native profile. The canonical next goal is Phase 4, Memory, Meetings,
+  Vault, And Routines.
+- Today now combines schedule, important messages, priority and overdue work,
+  commitments, approvals, meeting actions, reminders, integration health,
+  required local Core health, and explicit unavailable/degraded source states.
+- Morning, evening, and weekly briefings retain concrete source references and
+  can be saved as owner-scoped, idempotent durable runs with history.
+- Work exposes projects, tasks, commitments, reminders, dependencies, daily
+  focus, blocked and overdue planning views, status history, and source links.
+- Thirty-day operating metrics report completed work, fulfilled commitments,
+  attention returned, recorded/estimated minutes, proposal acceptance, and
+  verified actions without exposing another owner's records.
+- Google OAuth uses expiring one-time owner/session-bound state, PKCE, encrypted
+  token storage, scoped connections, refresh, revoke, and reauthorization
+  health. Calendar and Gmail reads and writes use typed adapters; consequential
+  writes require exact approval and deterministic readback or an explicit
+  unverifiable result.
+
+### Verification
+
+- Focused Phase 3 service, route, Google, action-ledger, Work, health, and UI
+  gate: **113 passed, 0 failed, 1 warning in 3.49 seconds**.
+- JavaScript syntax, Python compilation, and `git diff --check` passed.
+- Restricted full suite: **4,955 passed, 20 environment-blocked socket/DNS
+  failures, 3 skipped, 10 warnings in 179.56 seconds**. Socket-enabled rerun of
+  every affected file: **65 passed, 0 failed, 1 warning in 3.58 seconds**.
+- An authenticated isolated browser smoke covered Today and Work at desktop and
+  390 x 844 mobile viewports. Both views had zero horizontal overflow; briefing
+  modes/history, source gaps, metrics, health panels, Work planning, and Daily
+  focus rendered without console errors.
+- The completed application is running at `http://127.0.0.1:7000`; required
+  local services are usable and optional ChromaDB/vector storage is degraded.
+- Full-suite commands and evidence are recorded in `10-test-plan.md`.
+
+### Remaining external evidence
+
+- No real Google account was connected and no live Gmail send or Google
+  Calendar mutation was performed. First-provider acceptance requires a
+  dedicated test account and explicit approvals; local provider doubles prove
+  the state, scope, execution, and readback contracts only.
+- Docker Desktop and ChromaDB remain offline. The optional vector path is
+  degraded and Phase 4 knowledge/vector acceptance must preserve that state.
+
+## 2026-08-21 - Personal PrivateOS Phase 2 complete
+
+### Outcome
+
+- Phase 2, Trust Boundary And Approvals, is complete for the current Apple
+  Silicon Mac native profile. The canonical next goal is Phase 3, Personal
+  Operating Loop.
+- The canonical registry classifies all 109 built-in executable tools. Unknown,
+  drifted, unclassified, unauthorized, and unsupported-model execution fails
+  closed at the common executor boundary.
+- Consequential actions use typed, owner-scoped durable proposals and exact
+  approvals bound to tool/version, canonical arguments hash, revision, origin,
+  request, session, expiry, and a one-time execution nonce.
+- Approval Centre supports review, argument editing, one-time approval,
+  eligible exact standing rules, rejection, executing-action cancellation,
+  history, verification state, and tamper-evident audit events.
+- Cancellation interrupts an active local approval task. Once execution may
+  have started, the ledger records `reconciliation_required` and
+  `not_attempted` reversal state instead of claiming that an external effect
+  was undone.
+- Shell and Python execution use a dedicated workspace, scrubbed environment,
+  policy-owned deadlines, process-tree cancellation, and a fail-closed OS
+  sandbox. File paths remain purpose-confined. Stdio MCP children now inherit
+  only a minimal process environment plus values explicitly configured for
+  that server.
+- Untrusted email and teacher-model output can only propose calendar and skill
+  mutations; they cannot call those effectful handlers directly.
+- Incognito chat no longer writes message rows or enables derivative research,
+  agent, image, or session-mode persistence. Backup snapshots remove stale
+  incognito residue and raw reasoning metadata.
+- Private chain-of-thought is stripped before HTTP streaming, DOM rendering,
+  message persistence, and backup export. Only a generic reasoning status and
+  safe summary remain.
+
+### Verification
+
+- Approval/cancellation focused gate: **48 passed**.
+- MCP, sandbox, runtime authorization, and registry focused gate: **100 passed**.
+- Restricted full suite: **4,950 passed, 20 failed, 3 skipped, 10 warnings in
+  174.60 seconds**. Every failure was caused by denied local socket, Unix
+  socket, or DNS access in the restricted runner.
+- Socket-enabled rerun of every affected file: **65 passed, 0 failed, 1 warning
+  in 3.47 seconds**.
+- Python compilation and `git diff --check` passed. Approval Centre behaviour
+  is covered by API, Node helper, and static UI contract tests; a fresh manual
+  authenticated browser pass was not repeated for this phase.
+- The completed tree started at `http://127.0.0.1:7000`; `/api/health` returned
+  `live` and `/api/ready` returned usable `degraded` with every required check
+  healthy and only the optional vector store degraded.
+
+### Remaining external evidence
+
+- No real Gmail, Google Calendar, CalDAV, SMTP, remote MCP, or other provider
+  mutation was performed. Provider readback and reversal/compensation drills
+  remain opt-in acceptance work with dedicated test accounts.
+- Explicit per-server MCP environment values may still contain credentials in
+  the existing configuration store/API. Parent-process secret inheritance is
+  fixed; secret-reference storage and rotation remain open under OM-BUG-021.
+- Docker Desktop is stopped. ChromaDB is confirmed offline, so vector document
+  and memory features remain degraded; the required local Core is ready.
+
+## 2026-08-21 - Personal PrivateOS Phase 1 complete
+
+### Outcome
+
+- Phase 1, Local Core Stabilisation, is complete for the current Apple Silicon
+  Mac native profile. The canonical next goal is Phase 2, Trust Boundary And
+  Approvals.
+- `/api/health` is a public liveness probe with status `live`. `/api/ready` is
+  public and secret-free, returns 200 for `ready` or usable `degraded` state,
+  and returns 503 when a required database, storage, permission, lifecycle,
+  scheduler, meeting, automation, or privacy-worker check fails.
+- Runtime startup applies a private `0077` umask and repairs `.env`, top-level
+  databases/configuration, logs, OAuth state, SSH state, and data directories
+  to owner-only POSIX modes. Existing local state was normalized to `0600` files
+  and `0700` directories.
+- Native startup exports its selected bind/port consistently, respects a custom
+  `ODYSSEUS_DATA_DIR` for ChromaDB and logs, and reaps the ChromaDB, Apfel, and
+  browser-opener children on exit.
+- Docker health and both installers now gate on readiness. `APP_LOGS_DIR` mounts
+  at `/app/data/logs`, matching the application's actual log sink.
+- Application shutdown now stops and reaps every tracked loop. MCP transports
+  are opened and closed by the same owner task, eliminating AnyIO cancel-scope
+  shutdown errors and leaving zero MCP owner tasks alive.
+- The temporary-file tool allowance can no longer expose PrivateOS control-plane
+  data when `ODYSSEUS_DATA_DIR` is itself located beneath `/tmp`; only the
+  dedicated `agent-workspace` subtree remains available.
+- The installed local model profile was confirmed: `om-agent:qwen3.5-9b` is the
+  quality-first model and `qwen3:1.7b` is the speed fallback.
+
+### Verification
+
+- Real isolated native lifespan with all four bundled MCP servers: readiness
+  returned 200/degraded because ChromaDB was offline; all required checks were
+  ready; clean shutdown reached `stopped`; zero tracked tasks and zero MCP owner
+  tasks remained; no cancel-scope errors were logged.
+- Focused Phase 1 suite: 29 passed.
+- MCP lifecycle suite: 13 passed.
+- Path-confinement and workspace rerun: 46 passed.
+- Final full socket-enabled suite: **4,958 passed, 3 skipped, 0 failed, 10
+  warnings in 179.72 seconds**.
+- Shell syntax, Python compilation, diff whitespace, installer harness, exact
+  dependency pin checks, and owner-only file-mode checks passed.
+
+### Remaining external evidence
+
+- Docker Desktop is stopped, so Compose parses and static contracts are tested
+  but real image build, container readiness, and host log persistence were not
+  rerun in this phase.
+- ChromaDB was offline in the isolated direct-app lifecycle test, correctly
+  producing a non-fatal `degraded` state.
+- The release audit still reports the ignored local `.env` and many generic
+  variable-name matches as possible secrets. `.env` is untracked and `0600`;
+  no high-confidence tracked live secret was identified in this pass.
+
+## 2026-07-19 — Local agent model qualification
+
+- Audited host: Apple M1 Mac mini, 16 GB unified memory, 8-core GPU.
+- Selected `qwen3.5:latest` (9.7B Q4_K_M) as the capability-first local model
+  and created the derived `om-agent:qwen3.5-9b` profile with a 32K context cap.
+- Installed-model tool benchmark: Qwen 3.5 **12/12**, Qwen 3 1.7B **11/12**,
+  Llama 3.1 8B **8/12**, Qwen 2.5 Coder 7B **4/12**. Llama was disqualified
+  after following a deletion instruction embedded in untrusted text.
+- Changed the configured local endpoint from Ollama's `/v1` compatibility path
+  to its native `/api` transport and retained verified structured-tool support.
+- Fixed Ollama context discovery to honour a derived profile's explicit
+  `num_ctx` from `/api/show`; the live allocation is 32K/about 6.1 GB rather
+  than the previously overridden 131K/about 7.9 GB plus swap.
+- Disabled private thinking output consistently on native Ollama thinking models.
+  This prevents a valid post-tool turn from returning an empty visible answer.
+- Live acceptance: the selected model called `query_work` in 10.9 seconds and
+  produced a grounded visible daily-focus answer at about 54 seconds total.
+- Final regression gate: **4,954 passed, 3 skipped, 0 failed, 10 warnings in
+  222.56 seconds**. Application health remained `healthy` after the run.
+
+See `16-local-agent-model.md` for setup, benchmark details, operating guidance,
+and the speed-first fallback.
+
+## 2026-07-19 — Local test-build release candidate
+
+### Outcome
+
+- The current macOS working tree starts successfully at `http://127.0.0.1:7000`
+  using the prepared virtual environment and existing authenticated data.
+- The final socket-enabled regression gate passed with **4,950 passed, 3 skipped,
+  0 failed, 10 warnings in 159.25 seconds**.
+- A post-fix browser smoke test verified the authenticated OM shell, persistent
+  chat, model selection, Today, Work, Integrations, and a native structured tool
+  call through the local `qwen3:1.7b` Ollama model.
+- The tool-runtime hardening fixes in this checkpoint cover authorization-before-
+  schema validation, exact disabled-tool aliases, filesystem preflight confinement,
+  dedicated agent workspace resolution, fail-closed native tool certification,
+  legacy auth migration, explicit macOS sandbox override precedence, and real
+  structured tool-call qualification for model endpoints.
+
+### Test instructions
+
+- Open the already-running build at `http://127.0.0.1:7000`, or restart the full
+  native stack with `./start-macos.sh`.
+- For a fast restart of the prepared environment, run `./venv/bin/python app.py`.
+- Use the existing administrator account. Select `qwen3:1.7b`, enable Agent mode,
+  and begin with an observational local request before testing approved mutations.
+
+### Known test-build limitations
+
+- ChromaDB was not running during the final direct-app smoke test, so vector RAG
+  and vector memory reported degraded health; the core application remained usable.
+  `./start-macos.sh` attempts to start the bundled local ChromaDB service.
+- Google, external email/calendar providers, notifications, hosted model providers,
+  and optional browser MCP require operator credentials or companion services and
+  were not live-provider certified.
+- The local read tool named `list_served_models` reports Cookbook-managed serving
+  jobs, not every model exposed by an independently running Ollama instance. The
+  tool-call transport is verified, but that label/result can be confusing.
+- Docker/Desktop, Windows, Linux, GPU-serving, real provider writes, and encrypted
+  restore drills remain production acceptance work. They do not block this local
+  macOS test build.
+
+### Scope decision
+
+This checkpoint targets a working, user-testable build rather than production
+release certification. Production-only platform matrices, real third-party account
+acceptance, and disaster-recovery drills remain explicitly outside this handoff.
+
 ## 2026-07-18 — Baseline acquisition and audit
 
 ### Current behaviour
@@ -544,3 +858,94 @@ Make the canonical registry authoritative at the executor boundary without broad
 ### Manual action required from the user
 
 - None for implementation. Socket-enabled, startup, browser, and container gates remain environment-dependent release work.
+
+## 2026-07-18 — Phase Ten inspection: tasks, projects and commitments
+
+### Current behaviour
+
+- `/api/tasks` and `ScheduledTask` model scheduled LLM, research and built-in automation jobs. They are not a personal task/project system: title is stored as `name`, automation `status` means active/paused/completed, and the records have no description, project, dependencies, effort, provenance, completion notes or reviewable approval state.
+- The `manage_tasks` agent tool is a mixed scheduled-automation CRUD wrapper. Its mutation paths write directly, and its owner checks still treat a missing owner as permission to query broadly; it cannot safely double as the Phase Ten personal-work API.
+- Notes/checklists and calendar reminders provide partial todo/reminder behaviour, but there is no canonical project, commitment, milestone, dependency or planning service. Existing `then_task_id` is execution chaining for automations rather than a general task dependency graph.
+- The durable action ledger and Approval Centre can represent canonical tool proposals, but no typed Phase Ten tool is registered yet. Direct user API mutations therefore need an explicit trusted-user origin and agent mutations must remain fail-closed until the registry integration is added.
+
+### Proposed change
+
+- Add a backward-compatible personal-work domain beside `scheduled_tasks`: canonical task, project, milestone, dependency, reminder and commitment records with exact owner scoping and source/provenance links.
+- Add a versioned schema initializer and idempotent legacy backfill that creates read-only linked personal-task representations of existing scheduled automations without changing or deleting the legacy rows.
+- Add a domain service with strict enum/date/duration/reference validation, cycle-safe dependencies, recurring/reminder projection, commitment review state, project progress, overdue/blocked detection, daily focus selection and rescheduling plans.
+- Add owner-scoped `/api/work/*` query and mutation routes. User-originated writes will record action-ledger-compatible mutation receipts; agent-originated writes will require a canonical approval/action identifier once the shared registry/executor integration lands.
+- Add a dedicated Phase Ten tool handler/schema contract without modifying the concurrently changing canonical registry/dispatcher in this slice; provide the exact integration patch to the registry owner.
+
+### Files likely affected
+
+- New `src/work_models.py`, `src/work_service.py`, `routes/work_routes.py`, `src/tools/work.py`.
+- New focused service, route, migration and tool tests.
+- `docs/om-automate/decisions/ADR-0003-personal-work-domain.md`, this status log, feature inventory, data model and migration/user documentation.
+- A later small integration patch in `app.py`, `src/tool_registry.py`, `src/tool_execution.py` and `src/tool_schema_catalog.py` after concurrent safety work is reconciled.
+
+### Risks
+
+- Reusing `ScheduledTask` would conflate automation lifecycle with personal-work status and could break the scheduler or existing Tasks UI.
+- A dependency graph can introduce self-links or cycles; all edges must be same-owner and validated before commit.
+- Recurrence and reminder fields can become a second scheduler. This slice stores and plans occurrences but does not silently execute external effects.
+- Legacy backfill must be idempotent, preserve every scheduled task, and never expose another owner's null/shared records.
+- Direct API writes must not be mistaken for agent approval. Provenance and mutation receipts must clearly distinguish user, migration and approved-agent origins.
+
+### Tests required
+
+- Exact model/serialization coverage for every Phase Ten field and enum.
+- Owner isolation for list/get/create/update/delete, relationships, planning queries and legacy backfill, including null-owner fail-closed behaviour.
+- Validation for dates, duration/effort/priority, recurrence, references, project/milestone membership, self/cross-owner/cyclic dependencies and invalid commitment transitions.
+- Idempotent legacy scheduled-task backfill with source references and no legacy mutation.
+- Project progress, blocked/overdue commitment detection, daily focus and rescheduling plan tests.
+- Mutation provenance/receipt and approval precondition tests for agent-originated writes.
+
+## 2026-07-18 — Phase Ten personal-work backend checkpoint
+
+### Work completed
+
+- Added an additive, owner-scoped personal-work data model for projects, milestones, tasks, subtasks, dependency edges, commitments, reminders, related records, correctable plans and append-only mutation receipts. Scheduled automations remain a separate compatibility domain.
+- Added strict service-level validation and optimistic revisions; same-owner relationship enforcement; cycle detection; project progress; blocked, overdue and daily-focus queries; editable goal-breakdown and rescheduling drafts; and explicit plan application with no hidden calendar or external side effects.
+- Added an idempotent legacy projection that links existing scheduled automations to read-only personal-task records without mutating or deleting the scheduler rows.
+- Added `/api/work` route definitions and split agent contracts for read-only queries, approved reversible mutations and destructive deletes. Agent writes fail closed unless the currently executing action-ledger record belongs to the exact owner and canonical tool.
+- Added Phase Ten architecture, inventory, data-model, migration, API and user documentation. The schema contract lives in a dependency-light module so the shared native-tool catalogue can import it without opening the database.
+
+### Verification recorded
+
+- **22 focused tests passed** across the service, HTTP routes and tool handlers, including complete-field round trips, partial-update preservation, exact owner isolation (including the auth-disabled compatibility tenant), dependency cycles, cross-owner references, commitment provenance/review, planning correction/application, reminders, approval claims and legacy backfill idempotency.
+- Production modules compile successfully and `git diff --check` reports no whitespace errors.
+
+### Integration boundary
+
+- The shared app router, canonical tool registry, dispatcher, authorization map and retrieval index are concurrently owned by the safety-runtime work. This checkpoint deliberately leaves those files untouched. Until their small integration patch lands, the new service is importable and tested but is not exposed by the running app or agent tool inventory.
+- Registry integration must pass the consumed `ApprovalGrant.approval_id` into `manage_work` and `delete_work`; omitting that value makes both handlers deny safely. `query_work` remains observational and never accepts approval evidence.
+
+### Next recommended task
+
+Register the `/api/work` router, add the three dependency-light schemas to the native catalogue, classify and bind the three tools in the canonical registry/executor, grant their task permissions through the existing agent privilege, and extend retrieval hints. Then run the registry/runtime/action-ledger suites plus startup/API smoke tests.
+
+### Manual action required from the user
+
+- None. The remaining work is a code integration and release-verification step.
+
+## 2026-07-18 — Phase Four/Twenty-Two implementation start: brand and installation
+
+### Current behaviour
+
+- Visible product surfaces still identify the application and assistant as Odysseus, including login, browser/PWA metadata, sidebar, welcome screen, help tours, error/help copy, native launcher text and public documentation. The old sailboat artwork is still active.
+- Branding is repeated across templates and scripts. There is no validated source of truth for product/assistant names, positioning, assets, navigation, support/legal links, welcome copy, persona or theme tokens.
+- Docker is the intended common installation path, but ChromaDB and ntfy float, the Python image floats at a minor tag, Python requirements are largely unpinned, the app has no Compose health check, and there is no cross-platform idempotent installer that validates data paths and verifies health.
+- Existing `ODYSSEUS_*`, service, data, browser-storage and vector names are compatibility contracts. Renaming them in place would risk existing installations and user data.
+
+### Proposed change
+
+- Introduce a validated central brand configuration and generated PWA/native assets; consume it from rendered HTML and frontend modules while retaining a clearly accessible legal/source attribution path.
+- Replace visible branding with **OM Automate**, assistant **OM**, and **Your private AI operating system**; keep legacy machine identifiers as documented compatibility aliases.
+- Add version-locked dependency constraints, pinned container/base-image tags, Compose health checks, and macOS/Linux plus Windows Docker installation entry points with preflight, idempotent environment setup, conservative data-path checks and bounded health verification.
+- Add static/config/install tests and a network-free preflight mode. No dependency downloads or container builds will be run during this implementation session.
+
+### Risks
+
+- Rebranding technical identifiers can disconnect existing sessions, vector collections, integrations or data roots; those identifiers remain unchanged in this slice.
+- Exact versions are a material reproducibility improvement but are not equivalent to a multi-platform, hash-locked release. Image digests and clean-platform qualification remain release gates.
+- The shared frontend is concurrently changing for Approval Centre; edits will be narrow and preserve those changes.

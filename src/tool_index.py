@@ -50,6 +50,19 @@ ASSISTANT_ALWAYS_AVAILABLE = frozenset({
     "list_email_accounts", "list_emails", "read_email", "send_email", "reply_to_email",
     "bulk_email", "archive_email", "delete_email", "mark_email_read",
     "manage_calendar", "manage_notes", "manage_tasks",
+    "query_work", "manage_work", "delete_work",
+    "query_gmail", "manage_gmail_draft", "send_gmail",
+    "modify_gmail_message", "delete_gmail", "download_gmail_attachment",
+    "query_google_calendar", "create_google_calendar_hold",
+    "create_google_calendar_event", "update_google_calendar_event",
+    "respond_google_calendar_invitation", "update_google_calendar_attendees",
+    "delete_google_calendar_event",
+    "search_meetings", "create_meeting", "request_meeting_transcription",
+    "approve_meeting_action_item", "save_meeting_knowledge", "delete_meeting",
+    "query_knowledge", "manage_knowledge", "delete_knowledge",
+    "query_dashboard",
+    "query_automations", "manage_automation", "delete_automation",
+    "query_life", "manage_life", "delete_life",
     "manage_memory", "web_search", "read_file",
     "create_document", "update_document",
     "resolve_contact", "search_chats",
@@ -91,6 +104,38 @@ BUILTIN_TOOL_DESCRIPTIONS: Dict[str, str] = {
     "manage_memory": "Memory management: list, add, edit, delete, or search persistent memories. For facts about the USER (their name, preferences, where they live). NOT for info about ANOTHER person — addresses, phones, emails belonging to a contact go in manage_contact, not memory.",
     "manage_skills": "Skill management: add, update, publish, or search reusable skills/presets.",
     "manage_tasks": "Scheduled task management: list, create, edit, delete, pause, resume, or run cron tasks.",
+    "query_work": "Read personal tasks, subtasks, projects, milestones, commitments, reminders, priorities, blockers, daily focus plans, and work history without changing anything.",
+    "manage_work": "Create or update personal tasks, subtasks, projects, milestones, commitments, reminders, priorities, dependencies, and editable planning drafts. Not for recurring background automations.",
+    "delete_work": "Permanently delete a personal task, project, or commitment with explicit approval. Not for scheduled background automations.",
+    "query_gmail": "Read a connected Gmail account: search messages, read messages and threads, list labels, inspect attachments, and read drafts. OAuth tokens are never exposed.",
+    "manage_gmail_draft": "Create or update a reviewable Gmail draft without sending it. The provider draft is read back and verified.",
+    "send_gmail": "Send a Gmail draft, new email, reply, reply-all, or forward after explicit approval, then verify the sent provider record.",
+    "modify_gmail_message": "Apply or remove Gmail labels, archive a message, mark it read or unread, or star/unstar it with reversible provider verification.",
+    "delete_gmail": "Move a Gmail message to trash or permanently delete a draft after explicit destructive-action approval.",
+    "download_gmail_attachment": "Download one Gmail attachment to an approved workspace path using exclusive private file creation and byte-for-byte read-back verification.",
+    "query_google_calendar": "Read connected Google calendars and events, perform incremental sync, inspect free/busy and conflicts, or find timezone-aware free time.",
+    "search_meetings": "Read meeting records, transcripts, timestamped speaker evidence, analysis claims, processing jobs, revisions, and local transcription provider health.",
+    "create_meeting": "Create a local meeting record manually or from a known calendar event without claiming recording or realtime transcription.",
+    "request_meeting_transcription": "Queue local post-meeting transcription or analysis, edit timestamped segments, map speakers, retry/cancel jobs, link sources, or change retention.",
+    "approve_meeting_action_item": "Approve/reject a source-linked meeting claim; approved action items create exactly one personal task and inferred decisions require explicit confirmation.",
+    "save_meeting_knowledge": "Explicitly ingest an active meeting transcript into the private knowledge index with timestamp and speaker evidence.",
+    "delete_meeting": "Delete one meeting and its retained media, transcript, claims, jobs, and links after explicit destructive approval.",
+    "query_knowledge": "Search the private owner-scoped knowledge base with hybrid lexical/vector/metadata retrieval and source-linked excerpts, or inspect source and governed memory records.",
+    "manage_knowledge": "Ingest approved text, create or review governed memories, rebuild a source index, or remove indexed derivatives with local read-back verification.",
+    "delete_knowledge": "Delete one exact knowledge source or governed memory with revision checking and destructive approval.",
+    "query_dashboard": "Read the Today dashboard or source-grounded morning, evening, and weekly reviews including schedule, priorities, messages, commitments, reminders, meeting actions, and approvals.",
+    "query_automations": "Read validated structured automations and their durable run history, steps, outputs, approvals, errors, retry status, logs, and correlation IDs.",
+    "manage_automation": "Create, pause, enable, or manually run a bounded structured automation after explicit approval; not the legacy prompt scheduler.",
+    "delete_automation": "Delete one exact structured automation after destructive approval and version checking.",
+    "query_life": "Read user-approved relationship profiles, opt-in personal administration, trips, and travel items without changing them.",
+    "manage_life": "Create or revise relationship, sensitive opt-in administration, and non-booking travel records after approval.",
+    "delete_life": "Delete one exact personal-life record with revision checking and destructive approval.",
+    "create_google_calendar_hold": "Create a tentative calendar hold with no attendees, recurrence, notifications, or video call; suitable for reversible focus blocks.",
+    "create_google_calendar_event": "Create a confirmed Google Calendar event, optionally with attendees, recurrence, reminders, location, or video call, after approval.",
+    "update_google_calendar_event": "Modify an existing Google Calendar event after approval and verify the stored provider state with ETag support.",
+    "respond_google_calendar_invitation": "Accept, decline, or tentatively respond to a Google Calendar invitation after approval.",
+    "update_google_calendar_attendees": "Add or remove attendees on a Google Calendar event after approval and verify the final attendee set.",
+    "delete_google_calendar_event": "Delete one Google Calendar event after explicit destructive approval and verify it is absent.",
     "manage_endpoints": "Endpoint management: list, add, delete, enable, or disable model API endpoints.",
     "manage_mcp": "MCP server management: list, add, delete, reconnect servers, or list available tools.",
     "manage_webhooks": "Webhook management: list, add, delete, enable, or disable webhooks.",
@@ -132,7 +177,7 @@ BUILTIN_TOOL_DESCRIPTIONS: Dict[str, str] = {
     "serve_preset": "Launch a saved Cookbook serve preset by name. Reuses the exact tmux command + host the user already saved. Use for 'run stable diffusion 3.5', 'serve vllm-qwen', 'start the inpaint model' — preset-name matches the user's UI labels.",
     "adopt_served_model": "Register an existing tmux model server (one started manually or outside the cookbook flow) into Cookbook tracking AND add it as a chat endpoint. Use when the user (or a previous turn) launched something via ssh+tmux and now wants it visible in the UI, stoppable via stop_served_model, and usable in the model picker.",
     "list_cookbook_servers": "List the cookbook's configured servers (remote GPU boxes + local) and which is the current default. Use this BEFORE download_model/serve_model when the user didn't name a host — to decide where to run, or to ask the user which server when ambiguous. Downloads/serves default to the cookbook's selected server, NOT localhost.",
-    "app_api": "Generic loopback to allowed Odysseus internal endpoints. Use this when the user wants something the UI can do but there's no named tool for it. Covers calendar, gallery, library/documents, memory, notes, tasks, settings, research, compare, cookbook GPUs/state — allowed UI buttons hit /api/* endpoints and you can hit them too. Sensitive auth/user/admin/shell paths and host-control Cookbook mutation routes are blocked; do NOT use app_api for shell commands, package installs, engine rebuilds, or PID signalling. Use named command tooling for shell commands. action='endpoints' with filter=<keyword> lists available endpoints. action='call' takes method+path+body. Hits same routes the UI uses — auth flows free. NOTE: themes are NOT an API endpoint — use the ui_control tool (create_theme / set_theme), not app_api. SESSIONS/CHATS: do NOT use app_api for these — GET /api/sessions returns EMPTY for tool calls (it's owner-filtered and tool calls authenticate as a different identity). EMAIL ACCOUNTS: do NOT use /api/email/accounts via app_api; use list_email_accounts, list_emails, and read_email instead. To list/rename/archive/delete/fork chats use the list_sessions and manage_session tools instead.",
+    "app_api": "Generic loopback to allowed OM Automate internal endpoints. Use this when the user wants something the UI can do but there's no named tool for it. Covers calendar, gallery, library/documents, memory, notes, tasks, settings, research, compare, cookbook GPUs/state — allowed UI buttons hit /api/* endpoints and you can hit them too. Sensitive auth/user/admin/shell paths and host-control Cookbook mutation routes are blocked; do NOT use app_api for shell commands, package installs, engine rebuilds, or PID signalling. Use named command tooling for shell commands. action='endpoints' with filter=<keyword> lists available endpoints. action='call' takes method+path+body. Hits same routes the UI uses — auth flows free. NOTE: themes are NOT an API endpoint — use the ui_control tool (create_theme / set_theme), not app_api. SESSIONS/CHATS: do NOT use app_api for these — GET /api/sessions returns EMPTY for tool calls (it's owner-filtered and tool calls authenticate as a different identity). EMAIL ACCOUNTS: do NOT use /api/email/accounts via app_api; use list_email_accounts, list_emails, and read_email instead. To list/rename/archive/delete/fork chats use the list_sessions and manage_session tools instead.",
     "edit_image": "Edit an image in the gallery: upscale (increase resolution), remove background (rembg), inpaint (fill selected area), or harmonize (blend edits). Specify image ID and action.",
     "trigger_research": "Start a deep research job on any topic — appears in the Deep Research sidebar, streams progress, produces a detailed report. Use for 'research X', 'look into Y', 'do deep research on Z', 'investigate'. NOT a scheduled task — it runs now and surfaces in the sidebar.",
     "manage_bg_jobs": "Inspect and control detached background `bash` jobs (the ones started with a `#!bg` marker). action='list' shows this chat's jobs (id/status/age/command); action='output' returns a job's captured output so far (check on a long-running job, or re-read a finished one); action='kill' stops a runaway job by id. Use for 'is the background job done', 'check on that job', 'show the build output', 'kill the background job', 'stop the bg task'. output/kill need a job_id from list.",
@@ -347,9 +392,19 @@ class ToolIndex:
         # whole email toolset and crowding out the relevant tools — the model then
         # believed it had only email tools and refused web/other tasks (#1707).
         frozenset({"email", "emails", "mail", "mails", "gmail", "googlemail", "message", "messages", "send", "reply", "replies", "inbox", "unread"}):
-            {"list_email_accounts", "list_emails", "read_email", "send_email", "reply_to_email", "bulk_email", "delete_email", "archive_email", "mark_email_read", "resolve_contact", "ui_control"},
+            {"list_email_accounts", "list_emails", "read_email", "send_email", "reply_to_email", "bulk_email", "delete_email", "archive_email", "mark_email_read", "query_gmail", "manage_gmail_draft", "send_gmail", "modify_gmail_message", "delete_gmail", "download_gmail_attachment", "resolve_contact", "ui_control"},
         frozenset({"calendar", "event", "meeting", "schedule", "appointment"}):
-            {"manage_calendar"},
+            {"manage_calendar", "query_google_calendar", "create_google_calendar_hold", "create_google_calendar_event", "update_google_calendar_event", "respond_google_calendar_invitation", "update_google_calendar_attendees", "delete_google_calendar_event", "search_meetings", "create_meeting", "request_meeting_transcription", "approve_meeting_action_item", "save_meeting_knowledge", "delete_meeting"},
+        frozenset({"transcript", "transcription", "speaker", "diarization", "recording", "audio", "action item", "meeting notes"}):
+            {"search_meetings", "create_meeting", "request_meeting_transcription", "approve_meeting_action_item", "save_meeting_knowledge", "delete_meeting", "query_work", "manage_work", "query_knowledge"},
+        frozenset({"knowledge", "knowledge base", "source", "sources", "citation", "citations", "memory", "memories", "index", "rebuild index"}):
+            {"query_knowledge", "manage_knowledge", "delete_knowledge", "save_meeting_knowledge", "manage_memory"},
+        frozenset({"today", "dashboard", "morning briefing", "evening review", "weekly review", "daily briefing", "my day"}):
+            {"query_dashboard", "query_work", "query_google_calendar", "query_gmail", "search_meetings", "query_knowledge"},
+        frozenset({"automation", "automations", "workflow", "workflows", "trigger", "webhook", "recurring", "polling", "run history"}):
+            {"query_automations", "manage_automation", "delete_automation", "manage_tasks"},
+        frozenset({"relationship", "contact profile", "follow up", "renewal", "subscription", "warranty", "insurance", "membership", "household", "trip", "flight", "accommodation", "packing", "travel document"}):
+            {"query_life", "manage_life", "delete_life", "query_work", "manage_work"},
         # Detached background `bash` jobs (#!bg): check on / read output / kill.
         frozenset({"background job", "background jobs", "bg job", "bg jobs",
                    "background task", "is the job done", "check the job",
@@ -357,7 +412,12 @@ class ToolIndex:
                    "kill the background", "stop the background", "running job"}):
             {"manage_bg_jobs"},
         frozenset({"note", "todo", "reminder", "remind", "checklist", "remember to"}):
-            {"manage_notes"},
+            {"manage_notes", "query_work", "manage_work", "delete_work"},
+        frozenset({"task", "tasks", "todo", "todos", "project", "projects",
+                   "subtask", "subtasks", "milestone", "milestones",
+                   "commitment", "commitments", "deadline", "deadlines",
+                   "priority", "priorities", "blocked", "overdue"}):
+            {"query_work", "manage_work", "delete_work"},
         # Chat/session management. "rename" alone maps to documents below, so a
         # request like "rename the last 12 sessions/chats" needs these session
         # keywords to surface the right tools (NOT app_api — /api/sessions is
@@ -373,8 +433,8 @@ class ToolIndex:
                    "every evening", "every night", "every week", "each morning",
                    "daily task", "background task", "scheduled task", "schedule a",
                    "automatically", "auto-summarize", "auto summarize",
-                   "cron", "periodically", "on a schedule", "set up a task",
-                   "create a task", "summarize my inbox every", "remind me every"}):
+                   "cron", "periodically", "on a schedule",
+                   "summarize my inbox every", "remind me every"}):
             {"manage_tasks"},
         frozenset({"contact", "address", "phone", "who is"}):
             {"resolve_contact", "manage_contact"},

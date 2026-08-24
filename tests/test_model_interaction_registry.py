@@ -8,9 +8,12 @@ session_id/owner from the ctx, and (3) tool_execution.py dispatches them
 through the registry rather than the legacy dispatch_ai_tool elif.
 """
 import asyncio
-from pathlib import Path
+from types import SimpleNamespace
 
+import httpx
 import src.ai_interaction as ai_interaction
+import src.chatgpt_subscription as chatgpt_subscription
+import src.endpoint_resolver as endpoint_resolver
 import src.llm_core as llm_core
 import src.database as database
 from src.agent_tools import TOOL_HANDLERS
@@ -87,18 +90,65 @@ def test_list_models_no_endpoints(monkeypatch):
     monkeypatch.setattr(database, "SessionLocal", lambda: _S())
 
     res = asyncio.run(mit.ListModelsTool().execute("", {}))
-    assert res == {"results": "No enabled model endpoints configured."}
+    assert res["results"] == "No enabled model endpoints configured."
+    assert res["models"] == []
+    assert res["source"] == "local_endpoint_catalog"
+    assert res["runtime_verified"] is False
+
+
+def test_list_models_reads_only_local_cached_and_pinned_models(monkeypatch):
+    endpoint = SimpleNamespace(
+        id="endpoint-1",
+        name="Configured OpenRouter",
+        base_url="https://openrouter.ai/api/v1",
+        provider_auth_id="oauth-session-that-must-not-refresh",
+        cached_models='["cached/model", "hidden/model", "duplicate/model"]',
+        pinned_models='["pinned/model", "duplicate/model"]',
+        hidden_models='["hidden/model"]',
+    )
+
+    class _Q:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return [endpoint]
+
+    class _S:
+        def query(self, *args, **kwargs):
+            return _Q()
+
+        def close(self):
+            pass
+
+    def forbidden_side_effect(*args, **kwargs):
+        raise AssertionError("observational list_models must not resolve, refresh, or probe")
+
+    monkeypatch.setattr(database, "SessionLocal", lambda: _S())
+    monkeypatch.setattr(endpoint_resolver, "resolve_endpoint_runtime", forbidden_side_effect)
+    monkeypatch.setattr(chatgpt_subscription, "resolve_runtime_credentials", forbidden_side_effect)
+    monkeypatch.setattr(httpx, "get", forbidden_side_effect)
+
+    res = asyncio.run(mit.ListModelsTool().execute("", {}))
+
+    assert [model["id"] for model in res["models"]] == [
+        "cached/model",
+        "duplicate/model",
+        "pinned/model",
+    ]
+    assert all(model["source"] == "local_endpoint_catalog" for model in res["models"])
+    assert all(model["runtime_verified"] is False for model in res["models"])
+    assert res["runtime_verified"] is False
+    assert "runtime availability not probed" in res["results"]
+    assert "hidden/model" not in res["results"]
 
 
 def test_dispatched_via_registry_not_dispatch_ai_tool():
-    """The model tools route through the registry (_document_tool_dispatch), and
-    are no longer in the dispatch_ai_tool elif tuple."""
-    source = (Path(__file__).resolve().parent.parent / "src" / "tool_execution.py").read_text(encoding="utf-8")
-    assert 'elif tool in ("chat_with_model", "ask_teacher", "list_models"):' in source
+    """Model tools have exact handler bindings, never the AI catch-all."""
+    import src.tool_execution as execution
 
-    marker = "from src.ai_interaction import dispatch_ai_tool"
-    idx = source.index(marker)
-    branch_head = source.rfind("elif tool in (", 0, idx)
-    legacy_tuple = source[branch_head:idx]
     for name in _MODEL_TOOLS:
-        assert f'"{name}"' not in legacy_tuple, f"{name} still routed via dispatch_ai_tool"
+        module_name, class_name = execution._AGENT_HANDLER_CLASSES[name]
+        assert module_name == "src.agent_tools.model_interaction_tools"
+        assert class_name.endswith("Tool")
+        assert name not in execution._AI_DISPATCH_TARGETS

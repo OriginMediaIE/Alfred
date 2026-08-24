@@ -292,3 +292,26 @@ For every supported source-to-target path, retain:
 - observation-window owner and end time.
 
 An upgrade is not complete merely because the process starts. It is complete only when existing data remains usable, provider state is reconciled, no duplicate effect occurred, rollback evidence exists, and the target release's migration gates all pass.
+
+## 12. Phase Ten task and project compatibility migration
+
+The personal-work schema is additive. It does not rename, rebuild or delete `scheduled_tasks` or `task_runs`.
+
+On schema initialisation:
+
+1. `work_schema_meta` records the current personal-work schema version.
+2. The `work_*` tables are created with `checkfirst` semantics.
+3. Every discovered `scheduled_tasks` row gets one `work_tasks` projection keyed by unique `legacy_scheduled_task_id`.
+4. The projection copies the legacy owner into the exact owner key (`""` only for an intentionally ownerless auth-disabled installation), title/prompt, schedule status, next/scheduled date and recurrence description.
+5. The projection records `source_type=scheduled_task`, `created_by=migration`, `approval_state=migrated` and `legacy_read_only=true`.
+6. Re-running backfill updates changed projection fields and creates no duplicate. It never writes to the legacy automation row.
+
+Compatibility rules:
+
+- Continue to edit, pause, resume, run and delete automations through legacy `/api/tasks` until a separately tested automation migration ships.
+- Do not edit or delete their read-only personal-work projection.
+- New personal tasks/projects/commitments live only in `work_*`; they are not silently scheduled as automations.
+- Backups must retain both table families and `agent_actions`/audit records referenced by agent-originated mutation receipts.
+- During owner migration, never treat an empty owner key as shared data. It belongs only to the explicit auth-disabled compatibility tenant; assign or quarantine it before enabling multi-user access.
+
+Rollback can ignore/drop the additive `work_*` tables only if no new personal-work record must be retained. Otherwise export them first; reverting code will leave the tables inert but should not delete them.

@@ -41,9 +41,12 @@ def _patch_common(monkeypatch):
     monkeypatch.setattr(al, "execute_tool_block", _fake_exec, raising=False)
 
 
-def _run_loop(monkeypatch, round_text, max_rounds=2):
+def _run_loop(monkeypatch, round_text, max_rounds=2, *, native_tool=False):
     async def _fake_stream(_candidates, messages, **kwargs):
-        yield f'data: {json.dumps({"delta": round_text})}\n\n'
+        if native_tool:
+            yield f'data: {json.dumps({"type": "tool_calls", "calls": [{"name": "bash", "arguments": json.dumps({"command": round_text})}]})}\n\n'
+        else:
+            yield f'data: {json.dumps({"delta": round_text})}\n\n'
         yield "data: [DONE]\n\n"
     monkeypatch.setattr(al, "stream_llm_with_fallback", _fake_stream, raising=False)
 
@@ -52,14 +55,16 @@ def _run_loop(monkeypatch, round_text, max_rounds=2):
         [{"role": "user", "content": "do a long multi-step task"}],
         max_rounds=max_rounds,
         relevant_tools={"bash"},
+        _certified_tool_calling=native_tool,
     )
     return _types(_collect(gen))
 
 
 def test_emits_rounds_exhausted_when_cap_hit_mid_task(monkeypatch):
     _patch_common(monkeypatch)
-    # Every round returns a tool block -> never "done" -> loop exhausts the cap.
-    events = _run_loop(monkeypatch, "```bash\necho hi\n```", max_rounds=2)
+    # Every round returns a certified native call -> never "done" -> the loop
+    # exhausts the cap. Textual fences deliberately remain inert.
+    events = _run_loop(monkeypatch, "echo hi", max_rounds=2, native_tool=True)
     assert any(e.get("type") == "rounds_exhausted" for e in events), events
 
 

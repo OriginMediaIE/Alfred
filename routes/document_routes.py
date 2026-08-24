@@ -969,6 +969,12 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
         if not url or not model:
             raise HTTPException(500, "No endpoint configured for AI tidy")
 
+        from services.privacy_service import PrivacyError, get_privacy_service
+        try:
+            get_privacy_service().ensure_local_endpoint(user, url, purpose="document tidy")
+        except PrivacyError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
         db = SessionLocal()
         try:
             q = (
@@ -1268,6 +1274,11 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
             url, model_id, headers = _resolve_vl_model(vl_model, owner=user)
         except Exception as e:
             raise HTTPException(503, f"No vision model available: {e}")
+        from services.privacy_service import PrivacyError, get_privacy_service
+        try:
+            get_privacy_service().ensure_local_endpoint(user, url, purpose="document vision request")
+        except PrivacyError as exc:
+            raise HTTPException(409, str(exc)) from exc
 
         system_prompt = (
             "You analyze rendered PDF page images and propose values to fill in. "

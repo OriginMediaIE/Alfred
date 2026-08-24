@@ -1,12 +1,4 @@
-"""Scheduled tasks must be offered shell/file tools by default.
-
-Regression for #4163: the task runner built `relevant_tools` from RAG output
-plus ASSISTANT_ALWAYS_AVAILABLE, neither of which includes bash/python. On a
-host with an empty/degraded tool-embedding index, RAG returns nothing, so a
-task agent never received the shell — even for an admin owner. The fix offers
-the shell/file group by default and lets stream_agent_loop's owner gate decide
-who actually keeps it.
-"""
+"""Scheduled tasks keep shell/file tools behind an explicit crew allowlist."""
 
 from types import SimpleNamespace
 
@@ -25,12 +17,11 @@ def test_assistant_always_available_lacks_shell():
     assert "python" not in ASSISTANT_ALWAYS_AVAILABLE
 
 
-def test_shell_offered_when_rag_returns_nothing():
-    # Degraded/empty embedding index -> rag_tools is empty (the #4163 case).
-    tools = compose_task_relevant_tools(set(), ASSISTANT_ALWAYS_AVAILABLE, None)
-    assert "bash" in tools
-    assert "python" in tools
-    assert TASK_DEFAULT_SHELL_TOOLS <= tools
+def test_shell_not_offered_when_rag_returns_nothing():
+    tools = compose_task_relevant_tools(
+        set(), ASSISTANT_ALWAYS_AVAILABLE, TASK_DEFAULT_SHELL_TOOLS
+    )
+    assert not (TASK_DEFAULT_SHELL_TOOLS & tools)
 
 
 def test_assistant_and_rag_tools_preserved():
@@ -39,30 +30,28 @@ def test_assistant_and_rag_tools_preserved():
     )
     assert "web_fetch" in tools          # RAG-selected tool kept
     assert "manage_calendar" in tools    # assistant-always member kept
-    assert "bash" in tools               # shell default added
+    assert "bash" not in tools           # shell remains opt-in
 
 
 def test_crew_allowlist_restriction_still_honored():
     # A crew that defines enabled_tools yields a `disabled_tools` set
     # (all_tools - enabled). Anything it disables must stay disabled, including
     # the shell defaults — the task owner explicitly scoped the tools.
-    disabled = {"bash", "python", "edit_file"}
+    disabled = set(TASK_DEFAULT_SHELL_TOOLS)
     tools = compose_task_relevant_tools(set(), ASSISTANT_ALWAYS_AVAILABLE, disabled)
     assert "bash" not in tools
     assert "python" not in tools
     assert "edit_file" not in tools
-    # Shell tools the crew did NOT disable remain available.
-    assert "read_file" in tools
+    assert "read_file" not in tools
 
 
-def test_offered_shell_maps_to_real_schemas_for_admin():
-    # End-to-end with the real schema list: the names we add are actual
-    # function schemas, so an admin/single-user task (nothing in disabled_tools)
-    # really does get bash/python offered to the model — not just named in prose.
+def test_explicit_shell_allowlist_maps_to_real_schemas_for_admin():
     from src.agent_loop import FUNCTION_TOOL_SCHEMAS
 
     schema_names = {s["function"]["name"] for s in FUNCTION_TOOL_SCHEMAS}
-    offered = compose_task_relevant_tools(set(), ASSISTANT_ALWAYS_AVAILABLE, None)
+    offered = compose_task_relevant_tools(
+        {"bash", "python"}, ASSISTANT_ALWAYS_AVAILABLE, set()
+    )
     admin_schemas = offered & schema_names  # mirrors agent_loop's relevant∩schemas
     assert "bash" in admin_schemas
     assert "python" in admin_schemas
@@ -77,7 +66,9 @@ def test_non_admin_owner_block_strips_shell_end_to_end():
     from src.tool_security import NON_ADMIN_BLOCKED_TOOLS
 
     schema_names = {s["function"]["name"] for s in FUNCTION_TOOL_SCHEMAS}
-    offered = compose_task_relevant_tools(set(), ASSISTANT_ALWAYS_AVAILABLE, None)
+    offered = compose_task_relevant_tools(
+        {"bash", "python"}, ASSISTANT_ALWAYS_AVAILABLE, set()
+    )
     non_admin_schemas = (offered - set(NON_ADMIN_BLOCKED_TOOLS)) & schema_names
     assert "bash" not in non_admin_schemas
     assert "python" not in non_admin_schemas
@@ -149,5 +140,5 @@ async def test_scheduled_task_honors_global_disabled_tools(monkeypatch):
     assert "bash" not in offered
     assert "python" not in offered
     assert "read_file" not in offered
-    assert "edit_file" in offered   # shell default NOT globally disabled
+    assert "edit_file" not in offered  # shell/file group defaults off
     assert "web_fetch" in offered   # RAG-selected tool preserved

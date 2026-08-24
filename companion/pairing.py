@@ -18,6 +18,7 @@ from src.constants import AUTH_FILE
 
 PAIRING_VERSION = 1
 COMPANION_SCOPE = "chat"
+COMPANION_SCOPES = ("chat", "companion:read", "approvals:read")
 
 
 def default_port() -> int:
@@ -100,7 +101,7 @@ def mint_token(owner: str, name: str = "companion") -> tuple[str, str]:
             name=name,
             token_hash=token_hash,
             token_prefix=raw_token[:8],
-            scopes=COMPANION_SCOPE,
+            scopes=",".join(COMPANION_SCOPES),
             is_active=True,
         ))
     return token_id, raw_token

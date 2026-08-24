@@ -77,7 +77,7 @@ def clear_diagnostics():
 
 
 @pytest.mark.asyncio
-async def test_tail_requires_same_request_launch_then_failed_status(monkeypatch):
+async def test_observational_list_does_not_arm_tail_capability(monkeypatch):
     calls = []
     monkeypatch.setattr(
         "httpx.AsyncClient",
@@ -126,6 +126,28 @@ async def test_tail_requires_same_request_launch_then_failed_status(monkeypatch)
     )
     assert listed["exit_code"] == 0
 
+    after_list = await cookbook.do_tail_serve_output(
+        json.dumps({"session_id": "serve-owned1"}),
+        owner="alice",
+        request_id="request-1",
+    )
+    assert after_list["exit_code"] == 1
+    assert "list_served_models" in after_list["error"]
+    assert not [call for call in calls if call[1].endswith("/api/shell/exec")]
+
+    # A trusted action path may separately attest the status.  The
+    # observational list above deliberately cannot mutate this ledger.
+    cookbook_diagnostics.record_listed_statuses(
+        owner="alice",
+        request_id="request-1",
+        tasks=[
+            {
+                "session_id": "serve-owned1",
+                "status": "error",
+                "remote": "gpu.example",
+            }
+        ],
+    )
     tailed = await cookbook.do_tail_serve_output(
         json.dumps({"session_id": "serve-owned1"}),
         owner="alice",

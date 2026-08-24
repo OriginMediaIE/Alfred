@@ -292,7 +292,7 @@ function _buildCrashReport(task, outputText) {
   const diag = _diagnose(capturedOutput);
   const started = task?.ts ? new Date(task.ts).toISOString() : '';
   const report = [
-    '## Odysseus Cookbook crash report',
+    '## OM Automate model runtime crash report',
     '',
     'Please review this report for secrets before posting it publicly.',
     '',
@@ -1457,7 +1457,7 @@ async function _retryTask(el, task) {
       uiModule.showToast('Retrying download — progress may look reset while HuggingFace checks cached files, then it should resume.', 7000);
       _updateTask(task.sessionId, {
         status: 'running',
-        output: `${task.output || ''}\n\n[odysseus] Retrying download. Progress may briefly look like a fresh download while HuggingFace checks cached/incomplete files; cached partial files will be reused when available.`.trim(),
+        output: `${task.output || ''}\n\n[om-automate] Retrying download. Progress may briefly look like a fresh download while HuggingFace checks cached/incomplete files; cached partial files will be reused when available.`.trim(),
         _retrying: true,
       });
       _retryDownload(task.name, task.payload, task.sessionId);
@@ -2002,6 +2002,11 @@ export async function _launchServeTask(shortName, repo, cmd, fields, hostOverrid
     const payload = { repo_id: repo, remote_host: _host || undefined, remote_server_key: _serverMetaKey || undefined, remote_server_name: _serverMetaName || undefined, ssh_port: _sp || undefined, _cmd: cmd, _fields: fields || undefined, _env: _usedEnv, _envPath: _usedEnvPath, _gpus: _usedGpus };
     _addTask(data.session_id, shortName, 'serve', payload);
     uiModule.showToast(`Serving ${shortName}...`);
+    if (data.endpoint_id) {
+      window.dispatchEvent(new CustomEvent('cookbook:model-serve-registered', {
+        detail: { endpointId: data.endpoint_id, model: shortName },
+      }));
+    }
     // Auto-register may have enabled an existing (offline) endpoint for this
     // host:port. Refresh the picker so the row is no longer dimmed, and the
     // user doesn't see "offline" on a serve they just started.

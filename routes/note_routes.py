@@ -12,10 +12,12 @@ from pydantic import BaseModel
 from core.database import SessionLocal, Note
 from core.middleware import INTERNAL_TOOL_USER
 from src.auth_helpers import require_user
+from src.branding import get_brand_config
 from src.constants import DATA_DIR
 from sqlalchemy.orm.attributes import flag_modified
 
 logger = logging.getLogger(__name__)
+_BRAND = get_brand_config()
 
 
 # ---------------------------------------------------------------------------
@@ -364,7 +366,7 @@ async def dispatch_reminder(
                 msg["To"] = recipient
                 _t = title or 'Note'
                 _t = _t[len('Reminder:'):].strip() if _t.lower().startswith('reminder:') else _t
-                msg["Subject"] = f"Reminder (Odysseus): {_t}"
+                msg["Subject"] = f"Reminder ({_BRAND.product_name}): {_t}"
                 msg["Date"] = _dt.utcnow().strftime("%a, %d %b %Y %H:%M:%S +0000")
                 msg["X-Odysseus-Origin"] = "odysseus-ui"
                 msg["X-Odysseus-Kind"] = "reminder"

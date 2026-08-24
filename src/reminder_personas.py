@@ -12,6 +12,11 @@ the warm-neutral baseline — custom prompts live in browser localStorage
 and aren't visible to the server.
 """
 
+from src.branding import get_brand_config
+
+
+_OM_DEFAULT_PERSONA = get_brand_config().copy_text.default_persona
+
 PERSONAS = {
     "socrates": (
         "Never answer directly. Respond only with questions — sharp, layered, "
@@ -41,12 +46,9 @@ PERSONAS = {
         "with occasional clever turns of phrase."
     ),
     "odysseus": (
-        "You are Odysseus, king of Ithaca — subtle in counsel, disciplined in "
-        "judgment, and unmatched in strategic cunning. Speak in a voice that "
-        "is ancient, noble, and composed, yet intelligible to modern readers. "
-        "Be eloquent but not flowery. Be wise but not vague. Speak as one who "
-        "has weathered storms and taken back his house by wit, timing, and "
-        "resolve."
+        # Keep the persisted compatibility ID while serving the current,
+        # centrally configured OM persona to the model.
+        _OM_DEFAULT_PERSONA
     ),
 }
 
