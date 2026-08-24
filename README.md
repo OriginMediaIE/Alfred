@@ -95,7 +95,7 @@ and signed tag have not yet been assigned. When one exists, replace the
 placeholders below with the published repository and tag:
 
 ```bash
-git clone <(https://github.com/OriginMediaIE/Alfred)> om-automate
+git clone <(https://github.com/OriginMediaIE/Alfred.git)> om-automate
 cd om-automate
 ```
 
