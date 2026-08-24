@@ -30,12 +30,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-client \
     gosu \
     libgl1 \
-    libglib2.0-0t64 \
+    libglib2.0-0 \
     libxcb1 \
     libmagic1 \
     && rm -rf /var/lib/apt/lists/*
 
-# libgl1/libglib2.0-0t64/libxcb1 are runtime shared libs (libGL.so.1,
+# libgl1/libglib2.0-0/libxcb1 are runtime shared libs (libGL.so.1,
 # libglib-2.0/libgthread, libxcb.so.1) that opencv-python (cv2) loads. The
 # slim base omits them, so the Cookbook "install realesrgan" path imports cv2
 # and dies with `libxcb.so.1: cannot open shared object file` despite a clean
