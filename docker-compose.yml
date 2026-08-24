@@ -1,6 +1,8 @@
 services:
   odysseus:
-    image: om-automate:1.0.2
+    # The published multi-architecture image is the beginner/default path.
+    # Developers can still build this service locally with `docker compose build`.
+    image: ${OM_AUTOMATE_IMAGE:-ghcr.io/originmediaie/alfred:1.0.2}
     build: .
     labels:
       org.opencontainers.image.title: "OM Automate"

@@ -3,6 +3,7 @@
 param(
     [switch]$Check,
     [switch]$NoBuild,
+    [switch]$Pull,
     [switch]$NoOpen,
     [ValidateSet("cpu", "nvidia", "amd")][string]$Accelerator = "cpu",
     [ValidateRange(1, 3600)][int]$TimeoutSeconds = 240
@@ -63,6 +64,7 @@ if (Test-Path -LiteralPath $dataFull) {
     New-Item -ItemType Directory -Path $dataFull | Out-Null
 }
 Write-Host ("Data path: " + $dataFull)
+$firstBoot = -not (Test-Path -LiteralPath (Join-Path $dataFull "auth.json"))
 
 $bindValue = if ($env:APP_BIND) { $env:APP_BIND } else { Read-EnvValue "APP_BIND" }
 if (-not $bindValue) { $bindValue = "127.0.0.1" }
@@ -107,8 +109,13 @@ try {
     catch { Fail "Another install appears to be running ($lockPath)." }
 
     Write-Step "Starting exact OM Automate services"
+    if ($Pull) {
+        Write-Step "Downloading the published OM Automate images"
+        & docker compose @composeArgs pull
+        if ($LASTEXITCODE -ne 0) { Fail "Docker Compose could not pull the published images." }
+    }
     $upArgs = @("compose") + $composeArgs + @("up", "-d")
-    if (-not $NoBuild) { $upArgs += "--build" }
+    if ($Pull -or $NoBuild) { $upArgs += "--no-build" } else { $upArgs += "--build" }
     & docker @upArgs
     if ($LASTEXITCODE -ne 0) { Fail "Docker Compose failed to start OM Automate." }
 
@@ -134,6 +141,20 @@ try {
     Write-Host ""
     Write-Host ("{0} is live at {1} and ready at {2}" -f $AppName, $healthUrl, $readyUrl) -ForegroundColor Green
     Write-Host "Your existing .env and data directory were preserved."
+    if ($firstBoot) {
+        $temporaryLine = (& docker compose @composeArgs logs --no-color odysseus 2>$null | Select-String -Pattern "Temporary password:" | Select-Object -Last 1).Line
+        Write-Host ""
+        Write-Host "First login" -ForegroundColor Cyan
+        Write-Host "  Username: admin"
+        if ($temporaryLine) {
+            $temporaryPassword = ($temporaryLine -split "Temporary password:", 2)[1].Trim()
+            Write-Host ("  Temporary password: " + $temporaryPassword)
+            Write-Host "  Change this password after signing in."
+        } else {
+            Write-Host "  Run: docker compose logs odysseus"
+            Write-Host "  Look for the most recent 'Temporary password' line."
+        }
+    }
     if (-not $NoOpen) { Start-Process ("http://{0}:{1}" -f $healthHost, $port) }
 } finally {
     if ($lockStream) { $lockStream.Dispose() }

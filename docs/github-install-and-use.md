@@ -1,632 +1,467 @@
-# Beginner Guide: Install And Use OM Automate From GitHub
+# Beginner Guide: Install Alfred From GitHub
 
-This guide is written for someone who has never installed a project from GitHub
-before. It explains what to click, what to type, and why each step matters.
+This guide is for someone who has never used Git, Python, Docker, Terminal, or
+PowerShell. Follow the section for your computer and do the steps in order.
 
-OM Automate is an app that runs on your own computer. You open it in a web
-browser, but your private app data is stored locally on your machine unless you
-choose to connect outside services.
+Alfred is the GitHub project. The application currently displays the product
+name **OM Automate** in parts of its interface. Those names refer to the same
+installation in this guide.
 
-## The Easiest Choice
+## The short version
 
-If you are giving this to an internal Apple Silicon Mac tester, use the
-one-click installer:
+You install one prerequisite—Docker Desktop—then download and double-click the
+Alfred installer from GitHub.
 
-1. Build the installer on your Mac.
-2. Send the tester `dist/OM Automate Internal Test.dmg`.
-3. The tester opens the file and double-clicks `Install OM Automate.command`.
-4. The app opens.
-5. The tester logs in with:
+You do **not** need to:
 
-```text
-Username: Admin
-Password: Admin
-```
+- type `git clone`;
+- install Python;
+- install Homebrew;
+- change file permissions with `chmod`;
+- find the correct project folder in Terminal; or
+- build a Docker image on your computer.
 
-That internal installer is explained later in this guide.
+The installer does not install Docker Desktop for you. Docker is a privileged
+system application and must be installed through its normal, visible installer.
 
-If the user is installing from GitHub themselves, Docker is usually the simplest
-path because it keeps most of the technical parts inside one container system.
+## Before you start
 
-## Words You Will See
+Check that you have:
 
-- **GitHub**: a website where the project code is stored.
-- **Repository**: the project folder on GitHub.
-- **Clone**: download the project from GitHub onto your computer.
-- **Terminal**: an app where you type commands. On macOS it is called
-  Terminal. On Windows, use PowerShell.
-- **Docker**: a tool that runs the app in a controlled package.
-- **`.env` file**: a private settings file for your copy of the app.
-- **Local LLM**: an AI model downloaded and run on your own computer.
-- **Cookbook**: the OM Automate screen used to download and start local AI
-  models.
+1. A 64-bit Mac or Windows computer.
+2. The password or approval needed to install normal applications.
+3. A reliable internet connection.
+4. At least 20 GB of free disk space. Local AI models can require much more.
+5. Time for a first download that may take several minutes.
 
-## Before You Start
+Alfred itself opens in a web browser, but it runs locally on your computer.
+With the default settings, other computers cannot connect to it.
 
-You need:
+## A few useful words
 
-1. A computer running macOS, Windows, or Linux.
-2. An internet connection.
-3. A modern browser such as Chrome, Edge, Safari, or Firefox.
-4. At least 20 GB of free space for the app and a small local AI model. Larger
-   models need more space.
+- **GitHub** is the website that stores Alfred's project files and releases.
+- **Release** is a named, packaged version of Alfred.
+- **ZIP** is a compressed folder. You extract it before using its files.
+- **Docker Desktop** runs Alfred and its helper services in containers.
+- **Container** is an isolated package containing software and dependencies.
+- **Installer window** is the Terminal or Command Prompt window opened by the
+  downloaded installer. You do not need to type commands into it.
+- **`.env`** is the private settings file for your installation.
+- **Private data directory** stores accounts, memories, skills, calendar data,
+  documents, and other Alfred state.
+- **Local address** `http://127.0.0.1:7000` means Alfred on this computer only.
 
-You do not need to understand programming to follow this guide. You will copy
-and paste a few commands.
+## Install on a Mac
 
-## Install Option 1: One-Click Internal Mac Tester Installer
+### Step 1: Check your macOS version and free space
 
-Use this when you are sending the app to a trusted test user inside your
-business and they are using an Apple Silicon Mac.
+1. Click the Apple menu in the top-left corner.
+2. Choose **About This Mac** to see the macOS version.
+3. Open **System Settings → General → Storage** to check free space.
 
-Apple Silicon means a Mac with an Apple chip, such as M1, M2, M3, or M4.
+Both Apple Silicon Macs (M-series) and Intel Macs can use the Docker route.
+Apple Silicon users who later want maximum local-model performance can read the
+advanced native-install section in the main README.
 
-### Step 1: Build The Installer
+### Step 2: Install Docker Desktop
 
-On the developer Mac, open Terminal inside the project folder and run:
+1. Open [Docker Desktop for Mac](https://www.docker.com/products/docker-desktop/).
+2. Download the correct Mac version. The Docker page normally detects your Mac.
+3. Open the downloaded Docker installer.
+4. Move Docker into Applications if asked.
+5. Open **Docker** from Applications.
+6. Accept Docker's licence and system prompts.
+7. Wait until Docker says its engine is running.
 
-```bash
-./scripts/build-internal-macos-test-installer.sh
-```
+Leave Docker Desktop open. Alfred needs the Docker engine, although you can
+close the main Docker window after it has started.
 
-What this means:
+### Step 3: Download the Alfred installer
 
-- `./scripts/...` tells the computer to run the installer-building script.
-- The script packages a clean copy of OM Automate.
-- It creates a file that a tester can install by double-clicking.
+1. Open the [latest Alfred release](https://github.com/OriginMediaIE/Alfred/releases/latest).
+2. Scroll to the **Assets** section.
+3. Click `Alfred-macOS-Installer.zip`.
+4. Wait for the download to finish.
+5. Open your **Downloads** folder.
+6. Double-click `Alfred-macOS-Installer.zip` to extract it.
 
-When it finishes, look for:
+You should now see `Install-Alfred.command`.
 
-```text
-dist/OM Automate Internal Test.dmg
-```
+### Step 4: Run the installer
 
-### Step 2: Send The DMG To The Tester
+1. Double-click `Install-Alfred.command`.
+2. If macOS displays a security question, choose **Open**.
+3. If macOS says it cannot verify the developer:
+   - Control-click `Install-Alfred.command`;
+   - choose **Open**; and
+   - choose **Open** again.
+4. A Terminal window opens and displays each installation step.
+5. Do not close that window while files are downloading.
 
-Send this file to the tester:
+The installer checks Docker, downloads the selected Alfred release, pulls the
+published Docker images, starts the services, waits for a readiness check, and
+opens the app.
 
-```text
-dist/OM Automate Internal Test.dmg
-```
+### Step 5: Record the first login
 
-The file is a Mac installer disk image. A `.dmg` file is a common macOS package
-format.
-
-### Step 3: Tester Opens The Installer
-
-The tester should:
-
-1. Double-click `OM Automate Internal Test.dmg`.
-2. Double-click `Install OM Automate.command`.
-3. Wait for the installer window to finish.
-4. Let the app open automatically.
-
-What the installer does:
-
-- Copies the app to `~/Library/Application Support/OM Automate/app`.
-- Creates `~/Applications/OM Automate.app`.
-- Preserves existing app data if the tester installs again later.
-- Starts OM Automate.
-
-### Step 4: Tester Logs In
-
-Use:
+On a completely clean installation, the installer prints something similar to:
 
 ```text
-Username: Admin
-Password: Admin
+First login
+  Username: admin
+  Temporary password: randomly-generated-value
 ```
 
-Important:
+Write down or copy the temporary password before closing the window. It is
+randomly generated; it is not `AdminPass` and the normal public installer does
+not use `Admin` / `Admin`.
 
-- This login is only for the internal test installer.
-- It is intentionally easy for testing.
-- Change it after testing in **Settings > Account**.
+### Step 6: Open Alfred
 
-### Step 5: Tester Follows The Onboarding
+The installer normally opens:
 
-After login, OM Automate opens Cookbook. Cookbook helps the tester:
+[http://127.0.0.1:7000](http://127.0.0.1:7000)
 
-1. Search for a local AI model.
-2. Download the model.
-3. Start serving the model.
-4. Select the model in chat.
-5. Send a first request.
-6. Turn Web Search on or off.
-7. Create memories and skills.
-8. Ask the AI to use those memories.
-
-## Install Option 2: Beginner Docker Install From GitHub
-
-Use this if the user is installing the project themselves from GitHub.
-
-Docker is recommended for beginners because it handles many app dependencies
-for you.
-
-## Part A: Install The Basic Tools
-
-### Step 1: Install Git
-
-Git is the tool that downloads the project from GitHub.
-
-Download Git here:
+It also creates:
 
 ```text
-https://git-scm.com/downloads
+~/Applications/Alfred.app
 ```
 
-After installing Git, restart Terminal or PowerShell.
+The installer attempts to add Alfred to the Dock. If it cannot, open your
+personal Applications folder, drag `Alfred.app` to the Dock, and click it to
+start Alfred later.
 
-### Step 2: Install Docker
+### Step 7: Finish the account setup
 
-Docker runs OM Automate in a packaged environment.
+1. Sign in with username `admin` and the displayed temporary password.
+2. Open **Settings**.
+3. Open **Account**.
+4. Choose a strong new password.
+5. Store it in a password manager.
+6. Enable two-factor authentication if it is available for your setup.
 
-Download Docker Desktop here:
+Your Mac installation lives here:
 
 ```text
-https://www.docker.com/products/docker-desktop/
+~/Library/Application Support/Alfred
 ```
 
-After installing Docker:
+Private application data lives here:
+
+```text
+~/Library/Application Support/Alfred/data
+```
+
+## Install on Windows
+
+### Step 1: Check Windows and free space
+
+1. Open **Settings → System → About**.
+2. Confirm that the system type is 64-bit.
+3. Open **Settings → System → Storage**.
+4. Confirm that at least 20 GB is free.
+
+### Step 2: Install Docker Desktop
+
+1. Open [Docker Desktop for Windows](https://www.docker.com/products/docker-desktop/).
+2. Download Docker Desktop.
+3. Run the installer.
+4. Keep the recommended WSL 2 option unless your administrator requires a
+   different setup.
+5. Restart Windows if the installer asks you to.
+6. Open **Docker Desktop** from the Start menu.
+7. Accept Docker's licence and system prompts.
+8. Wait until Docker says the engine is running.
+
+Leave Docker Desktop running while you install Alfred.
+
+### Step 3: Download and extract the Alfred installer
+
+1. Open the [latest Alfred release](https://github.com/OriginMediaIE/Alfred/releases/latest).
+2. Scroll to **Assets**.
+3. Click `Alfred-Windows-Installer.zip`.
+4. Open your **Downloads** folder.
+5. Right-click the downloaded ZIP and choose **Extract All**.
+6. Open the extracted folder.
+
+You should see both of these files:
+
+```text
+Install-Alfred.cmd
+Install-Alfred.ps1
+```
+
+Keep the files together. The `.cmd` file starts the PowerShell installer.
+
+### Step 4: Run the installer
+
+1. Double-click `Install-Alfred.cmd`.
+2. If Microsoft Defender SmartScreen appears, confirm that the file came from
+   `github.com/OriginMediaIE/Alfred`, choose **More info**, then **Run anyway**.
+3. A Command Prompt window opens.
+4. Do not close it while the installer is downloading or starting services.
+
+If your organisation blocks PowerShell scripts, ask its administrator to allow
+this project script or use the documented source installation. Do not disable
+organisation-wide security controls.
+
+### Step 5: Record the first login
+
+On a new installation, record the username and temporary password printed in
+the installer window:
+
+```text
+Username: admin
+Temporary password: randomly-generated-value
+```
+
+Press a key to close the installer only after you have recorded this password.
+
+### Step 6: Open Alfred and change the password
+
+1. Open [http://127.0.0.1:7000](http://127.0.0.1:7000).
+2. Sign in as `admin` with the temporary password.
+3. Open **Settings → Account**.
+4. Set a strong new password and store it safely.
+
+The installer creates an **Alfred** shortcut on the Desktop and in the Start
+menu. To put it on the taskbar, right-click the shortcut and choose **Pin to
+taskbar**.
+
+Your Windows installation lives here:
+
+```text
+%LOCALAPPDATA%\Alfred
+```
+
+Private application data lives here:
+
+```text
+%LOCALAPPDATA%\Alfred\data
+```
+
+## What to expect on the first run
+
+The first run is slower than later starts because Docker downloads several
+images. The installer displays these stages:
+
+1. Checking Docker Desktop.
+2. Choosing an Alfred release.
+3. Downloading Alfred from GitHub.
+4. Installing Alfred without replacing private data.
+5. Pulling the published Docker images.
+6. Starting Alfred, ChromaDB, SearXNG, and ntfy.
+7. Waiting for Alfred's readiness check.
+8. Creating a Mac app or Windows shortcut.
+
+Download time depends on internet speed and whether Docker already has some of
+the image layers.
+
+## Start Alfred again later
+
+### Mac
+
+1. Open Docker Desktop if it is not already running.
+2. Click **Alfred** in the Dock or open `~/Applications/Alfred.app`.
+3. Wait for the browser to open.
+
+### Windows
+
+1. Open Docker Desktop if it is not already running.
+2. Double-click the **Alfred** Desktop shortcut or choose Alfred from Start.
+3. Wait for the browser to open.
+
+If the browser does not open automatically, visit
+[http://127.0.0.1:7000](http://127.0.0.1:7000).
+
+## Stop Alfred
+
+Opening and closing the browser does not stop the containers.
+
+For an occasional personal installation, leaving the containers running with
+Docker Desktop is normally fine. To stop them deliberately:
 
 1. Open Docker Desktop.
-2. Wait until it says Docker is running.
-3. Leave Docker Desktop open.
+2. Open **Containers**.
+3. Find the Alfred/OM Automate group.
+4. Click its **Stop** button.
 
-### Step 3: Open The Command App
+Do not click a delete-volume option. Docker volumes can contain supporting
+search and notification state.
 
-On macOS:
+## Update Alfred
 
-1. Press `Command + Space`.
-2. Type `Terminal`.
-3. Press `Enter`.
+Before an important update, create and verify an encrypted backup from Alfred's
+backup tools.
 
-On Windows:
+Then:
 
-1. Click Start.
-2. Type `PowerShell`.
-3. Open PowerShell.
+1. Download the newest installer ZIP from the
+   [latest release](https://github.com/OriginMediaIE/Alfred/releases/latest).
+2. Extract it.
+3. Run the installer exactly as before.
 
-On Linux:
+The installer updates application files and images while preserving:
 
-Open your Terminal app.
+- `.env`;
+- the `data` directory;
+- the `logs` directory;
+- accounts and passwords;
+- memories and skills;
+- calendar and task records;
+- uploaded documents; and
+- application settings.
 
-## Part B: Download The Project
+Never treat an upgrade as your only copy of important personal data. Keep a
+verified backup outside the installation folder.
 
-### Step 1: Choose A Folder
+## Uninstall Alfred
 
-This command moves you to your home folder:
+There are two different choices.
 
-```bash
-cd ~
-```
+### Remove the app but keep private data
 
-What this means:
+1. Stop the Alfred containers in Docker Desktop.
+2. Remove the Alfred app/shortcut.
+3. Keep the Alfred installation folder listed above.
 
-- `cd` means "change directory".
-- `~` means your personal home folder.
-- The project will be downloaded inside that area.
+You can reinstall later and reuse that data.
 
-### Step 2: Clone The GitHub Repository
+### Permanently erase Alfred and its data
 
-Replace `<GITHUB_REPOSITORY_URL>` with the real GitHub URL before publishing
-this guide.
+This is destructive. First export anything you want to retain and verify the
+export. Then remove the Alfred containers, application folder, private `data`
+folder, and Alfred-specific Docker volumes. Do not remove Docker volumes unless
+you are certain which volumes belong to Alfred.
 
-```bash
-git clone <GITHUB_REPOSITORY_URL> om-automate
-```
+## Common problems
 
-What this means:
+### “Docker is required”
 
-- `git clone` downloads a copy of the project.
-- `<GITHUB_REPOSITORY_URL>` is the GitHub address.
-- `om-automate` is the folder name that will be created on your computer.
+Docker Desktop is not installed or the `docker` command is not available.
+Install Docker Desktop from its official website, open it, wait for the engine,
+then rerun the Alfred installer.
 
-### Step 3: Enter The Project Folder
+### Docker is installed but did not become ready
 
-```bash
-cd om-automate
-```
+1. Open Docker Desktop manually.
+2. Look for an error in the Docker window.
+3. Restart Docker Desktop.
+4. Restart the computer if Docker requests it.
+5. Run the Alfred installer again.
 
-What this means:
+### macOS will not open `Install-Alfred.command`
 
-- You are moving into the project folder.
-- The next commands must be run from inside this folder.
+Control-click the file, choose **Open**, and confirm **Open** again. Download
+installer files only from the official Alfred repository release page.
 
-## Part C: Create The Private Settings File
+### Windows SmartScreen blocks the installer
 
-Run:
+Check that the ZIP came from `github.com/OriginMediaIE/Alfred`. Choose **More
+info → Run anyway** only when that source is correct. The release artifacts are
+not yet code-signed with a commercial Windows certificate.
 
-```bash
-cp .env.example .env
-```
+### The page does not open
 
-What this means:
+Try [http://127.0.0.1:7000](http://127.0.0.1:7000) directly. In Docker Desktop,
+confirm that the Alfred containers are running rather than stopped or failed.
 
-- `.env.example` is a safe example settings file.
-- `.env` is your private settings file.
-- The app reads `.env` when it starts.
+### Port 7000 is already used
 
-Important:
-
-- Do not upload `.env` to GitHub.
-- Do not share `.env` publicly.
-- It may contain passwords, API keys, or private settings later.
-
-For a normal local install, these settings are safe:
-
-```dotenv
-AUTH_ENABLED=true
-LOCALHOST_BYPASS=false
-APP_BIND=127.0.0.1
-APP_PORT=7000
-```
-
-What these mean:
-
-- `AUTH_ENABLED=true` means users must log in.
-- `LOCALHOST_BYPASS=false` means login is not skipped.
-- `APP_BIND=127.0.0.1` means the app is only available on your own computer.
-- `APP_PORT=7000` means the app opens at port 7000 in your browser.
-
-## Part D: Start The App With Docker
-
-### Step 1: Check The Setup
-
-On macOS or Linux, run:
-
-```bash
-./install-om-automate.sh --check
-```
-
-On Windows PowerShell, run:
-
-```powershell
-.\install-om-automate.ps1
-```
-
-What this means:
-
-- The macOS/Linux check looks for Docker and required settings.
-- The Windows command starts the installer script.
-- If Docker is not running, open Docker Desktop and try again.
-
-### Step 2: Install And Start
-
-On macOS or Linux, run:
-
-```bash
-./install-om-automate.sh
-```
-
-On Windows, if you did not already run the PowerShell command above, run:
-
-```powershell
-.\install-om-automate.ps1
-```
-
-What this means:
-
-- Docker builds the OM Automate app.
-- Docker starts the app and helper services.
-- The script waits until the app is ready.
-
-This may take several minutes the first time.
-
-### Step 3: Open The App
-
-Open this address in your browser:
-
-```text
-http://127.0.0.1:7000
-```
-
-What this means:
-
-- `127.0.0.1` means "this computer".
-- `7000` is the app port.
-- The app is not public on the internet with this default setup.
-
-## Part E: First Login
-
-The first time OM Automate starts, it creates an administrator account.
-
-If the installer prints a username and password, use those to log in.
-
-If you missed the password, run:
-
-```bash
-docker compose logs odysseus
-```
-
-What this means:
-
-- `docker compose logs` shows messages from the running app.
-- `odysseus` is the app service name inside Docker.
-- The first-login password may be shown there.
-
-After you log in:
-
-1. Open **Settings**.
-2. Open **Account**.
-3. Change the temporary password.
-4. Save the new password somewhere safe.
-
-Important:
-
-- Normal GitHub installs do not use `Admin` / `Admin`.
-- `Admin` / `Admin` only works in the special internal Mac test installer.
-
-## Part F: Download Your First Local AI Model
-
-### Step 1: Open Cookbook
-
-In OM Automate, click **Cookbook**.
-
-Cookbook is where you find, download, and start local AI models.
-
-### Step 2: Search For A Model
-
-Search for a small beginner-friendly model first.
-
-Why:
-
-- Small models download faster.
-- Small models are easier for a computer to run.
-- Large models may need much more memory and disk space.
-
-### Step 3: Download The Model
-
-Click the download option for the model.
-
-Wait until the download finishes. This can take a while.
-
-### Step 4: Start The Model
-
-Click **Serve** or **Start**.
-
-What this means:
-
-- The model is now running on your computer.
-- OM Automate can send chat requests to it.
-
-### Step 5: Use The Model In Chat
-
-Go back to chat and select the new model in the model picker.
-
-Try this message:
-
-```text
-Explain what OM Automate can help me do in five simple bullet points.
-```
-
-If the model responds, the local AI setup is working.
-
-## Part G: Use The Web Search Switch
-
-In chat, OM Automate has a Web Search switch.
-
-When Web Search is **off**:
-
-- The AI does not intentionally search the internet for that request.
-- It uses the prompt, local context, selected files, and enabled memories.
-
-When Web Search is **on**:
-
-- The AI can use internet search through the configured search service.
-- Use this for current information, recent events, or things that may have
-  changed.
-
-Beginner rule:
-
-- Leave Web Search off for private or offline work.
-- Turn Web Search on only when you want the AI to look something up.
-
-## Part H: Create Memories
-
-Memories are saved facts or preferences that OM Automate can use later.
-
-### Step 1: Open Brain
-
-Click **Brain**.
-
-Brain is where memories and skills are managed.
-
-### Step 2: Add A Memory
-
-Create a memory like:
-
-```text
-My internal test notes should be short, plain-English, and include clear
-acceptance criteria.
-```
-
-What this means:
-
-- You are teaching OM Automate a preference.
-- Later, chat can use that preference when answering.
-
-### Step 3: Enable Memory Context
-
-Turn on memory context if it is not already on.
-
-What this means:
-
-- OM Automate is allowed to include saved memories in chat context.
-- Turn it off when you do not want memories used.
-
-### Step 4: Test The Memory
-
-Ask:
-
-```text
-Draft test notes for the local LLM onboarding flow using my saved preference.
-```
-
-If the answer is short, plain-English, and includes acceptance criteria, the
-memory is working.
-
-## Part I: Create Skills
-
-Skills are reusable instructions for tasks you do often.
-
-Example skill:
-
-```text
-Title: Internal test note writer
-When to use: Use when writing notes for internal QA or test users.
-How: Keep the notes short, plain-English, and include acceptance criteria.
-Tags: testing, QA, internal
-```
-
-What this means:
-
-- A memory is usually a fact or preference.
-- A skill is more like a reusable mini-process.
-- Skills help the AI repeat a task in a consistent way.
-
-## Stop And Restart The App
-
-### Docker
-
-To stop the app:
-
-```bash
-docker compose stop
-```
-
-To start it again:
-
-```bash
-docker compose up -d
-```
-
-What this means:
-
-- `stop` pauses the running app containers.
-- `up -d` starts them again in the background.
-
-### Apple Silicon Native
-
-If you started the app with:
-
-```bash
-./start-macos.sh
-```
-
-Stop it by pressing `Ctrl+C` in the Terminal window that is running it.
-
-Start it again with:
-
-```bash
-./start-macos.sh
-```
-
-## Common Problems
-
-### Docker Is Not Running
-
-Open Docker Desktop and wait until it says Docker is running. Then try the
-install command again.
-
-### The Browser Page Does Not Open
-
-Manually open:
-
-```text
-http://127.0.0.1:7000
-```
-
-### Port 7000 Is Already In Use
-
-Open `.env` and change:
+Open the private `.env` file inside the Alfred installation folder. Add or
+change this line:
 
 ```dotenv
 APP_PORT=7001
 ```
 
-Then restart the app.
+Run Alfred again, then open
+[http://127.0.0.1:7001](http://127.0.0.1:7001).
 
-What this means:
+### I lost the temporary password
 
-- Only one app can use a port at a time.
-- Changing to `7001` gives OM Automate a different local address.
-
-### I Cannot Find The Login Password
-
-Run:
+Open a terminal in the Alfred installation folder and view the application
+logs:
 
 ```bash
 docker compose logs odysseus
 ```
 
-Look for the first admin login message.
+Look for the latest `Temporary password` line. If the password was already
+changed, use the application's supported account-recovery process; do not
+delete `data/auth.json` to force a new account.
 
-### The Local AI Model Is Too Slow
+### No AI model is available
 
-Try a smaller model.
+The application and an AI model are separate services. Open **Cookbook** or
+**Settings → Models**, configure a supported local or hosted model endpoint,
+test it, and select it in chat. A model must also support structured tool calls
+for agent tools to work.
 
-Why:
+### A local model on the host cannot be reached from Docker
 
-- Local AI models use your computer's memory and processor.
-- Bigger models are smarter in some cases, but they need stronger hardware.
+Inside a container, `localhost` means the container itself. For services such
+as Ollama running on the computer, use `host.docker.internal` where Alfred asks
+for the host name—for example, `http://host.docker.internal:11434`.
 
-### Web Search Does Not Work
+### I need detailed logs
 
-Check:
-
-1. Docker is running.
-2. The app is running.
-3. Web Search is switched on in chat.
-4. `SEARXNG_INSTANCE` in `.env` points to the search service.
-
-For Docker installs, the default setup starts SearXNG for you.
-
-### Apfel Is Not Installed
-
-Apfel is a separate Apple Silicon helper installed with Homebrew, not a Python
-package.
-
-On an Apple Silicon Mac, run:
+From the installation directory, run:
 
 ```bash
-brew install apfel
+docker compose ps
+docker compose logs --tail=200 odysseus
+docker compose logs --tail=200 chromadb
+docker compose logs --tail=200 searxng
 ```
 
-What this means:
+Remove passwords, tokens, email content, personal file names, and other private
+information before sharing logs publicly.
 
-- Apfel lets OM Automate use Apple's local Foundational Models through an
-  OpenAI-compatible local server.
-- Cookbook still works without Apfel, but some Apple-local model options may be
-  limited.
+## Advanced source install
 
-## Safety Notes
+Developers who deliberately want a Git checkout can still use:
 
-- Keep `.env` private.
-- Do not commit `.env` to GitHub.
-- Do not commit the `data/` folder to GitHub.
-- Do not publish your local app directly to the internet.
-- Keep `AUTH_ENABLED=true`.
-- Keep `APP_BIND=127.0.0.1` unless you know exactly why you need network access.
-- Change the `Admin` / `Admin` password after internal testing.
-- Treat Web Search as permission for the AI to use the internet.
-- Treat memories as saved context that can affect future answers.
+```bash
+git clone https://github.com/OriginMediaIE/Alfred.git
+cd Alfred
+```
 
-## Quick Checklist For A Beginner
+On macOS or Linux:
 
-1. Install Git.
-2. Install Docker Desktop.
-3. Open Docker Desktop and wait for it to run.
-4. Open Terminal or PowerShell.
-5. Run `git clone <GITHUB_REPOSITORY_URL> om-automate`.
-6. Run `cd om-automate`.
-7. Run `cp .env.example .env`.
-8. Run the installer script for your system.
-9. Open `http://127.0.0.1:7000`.
-10. Log in with the first admin credentials.
-11. Open Cookbook.
-12. Download and start a local model.
-13. Select the model in chat.
-14. Test Web Search on and off.
-15. Add a memory in Brain.
-16. Ask chat to use the memory.
+```bash
+./install-om-automate.sh --pull
+```
+
+On Windows PowerShell:
+
+```powershell
+.\install-om-automate.ps1 -Pull
+```
+
+Use the scripts without `--pull`/`-Pull` only when you intentionally want to
+build the Docker image from the checked-out source.
+
+## Privacy and safety
+
+- Keep authentication enabled.
+- Keep `APP_BIND=127.0.0.1` unless you have deliberately configured
+  authenticated HTTPS.
+- Never commit or share `.env`.
+- Never commit or share the `data` directory.
+- Treat calendar, email, shell, model-serving, and file tools as privileged.
+- Verify consequential actions in Alfred's audit and approval interfaces.
+- Back up important data before updating or removing the installation.
+- Download installers only from the official GitHub release page.
+
+Each GitHub release includes `SHA256SUMS.txt`. Advanced users can compare its
+hash with the downloaded ZIP before running it.
+
+## Maintainer: publish the installer assets
+
+The repository workflow `.github/workflows/release-installers.yml` attaches the
+two installer ZIPs and `SHA256SUMS.txt` whenever a GitHub release is published.
+The release should point at a reviewed tag. After publishing, verify that both
+ZIPs download, extract, and target that release tag before announcing it to
+beginners.

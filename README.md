@@ -25,6 +25,110 @@ The system is designed around three rules:
 3. Answers and completed actions should expose sources, verification, and
    uncertainty instead of silently claiming success.
 
+## Install Alfred: the beginner route
+
+The easiest installation uses Docker Desktop and the downloadable Alfred
+installer. You do **not** need Git, Python, Homebrew, PowerShell knowledge, or
+Terminal commands for this route.
+
+### Before you begin
+
+You need:
+
+- a 64-bit Mac or Windows computer;
+- an internet connection;
+- at least 20 GB of free disk space (local AI models may need more); and
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed
+  and open.
+
+Docker Desktop is the only system prerequisite. It runs Alfred and its helper
+services in isolated containers. The installer will check Docker and explain
+what is missing; it does not silently install privileged system software.
+
+### One-click install on macOS
+
+1. Install and open [Docker Desktop for Mac](https://www.docker.com/products/docker-desktop/).
+2. Open the [latest Alfred release](https://github.com/OriginMediaIE/Alfred/releases/latest).
+3. Under **Assets**, download `Alfred-macOS-Installer.zip`.
+4. Double-click the ZIP, then double-click `Install-Alfred.command`.
+5. If macOS asks whether Terminal may open the file, choose **Open**.
+6. Leave the installer window open. The first download may take several
+   minutes.
+7. When it says installation succeeded, Alfred opens at
+   [http://127.0.0.1:7000](http://127.0.0.1:7000).
+
+The installer also creates `Alfred.app` in your personal Applications folder
+and attempts to add it to the Dock. If macOS blocks a downloaded installer,
+Control-click it, choose **Open**, then choose **Open** again. The public
+installer is not yet Apple-notarized, so this extra confirmation may be
+required.
+
+### One-click install on Windows
+
+1. Install and open [Docker Desktop for Windows](https://www.docker.com/products/docker-desktop/).
+2. Open the [latest Alfred release](https://github.com/OriginMediaIE/Alfred/releases/latest).
+3. Under **Assets**, download `Alfred-Windows-Installer.zip`.
+4. Right-click the ZIP and choose **Extract All**.
+5. Open the extracted folder and double-click `Install-Alfred.cmd`.
+6. If Windows asks for permission, confirm that the file came from the Alfred
+   GitHub release, then choose **Run anyway**.
+7. Leave the installer window open. When it finishes, Alfred opens at
+   [http://127.0.0.1:7000](http://127.0.0.1:7000).
+
+The installer creates Alfred shortcuts on the Desktop and Start menu. Windows
+does not reliably allow installers to pin arbitrary apps automatically; to add
+Alfred to the taskbar, right-click its shortcut and choose **Pin to taskbar**.
+
+### First login
+
+On a completely new installation, the installer prints:
+
+```text
+Username: admin
+Temporary password: <a randomly generated password>
+```
+
+Use those details to sign in. Then open **Settings → Account** and replace the
+temporary password immediately. Existing accounts and passwords are preserved
+when the installer is run again.
+
+### Start Alfred again later
+
+- **Mac:** click `Alfred` in the Dock or open `~/Applications/Alfred.app`.
+- **Windows:** double-click the `Alfred` Desktop or Start-menu shortcut.
+- **Any platform:** open
+  [http://127.0.0.1:7000](http://127.0.0.1:7000) after Docker Desktop and the
+  Alfred containers are running.
+
+### What the installer changes
+
+The installer:
+
+1. checks that Docker Desktop is installed and running;
+2. downloads the latest tagged Alfred release from this repository;
+3. installs the application under your own user account;
+4. pulls the published multi-platform Docker images;
+5. creates a private `.env` settings file on first install;
+6. preserves `.env`, accounts, memories, skills, calendars, documents, and
+   other data on repeat runs;
+7. waits for Alfred's readiness check; and
+8. opens Alfred in your browser and creates a desktop launcher.
+
+Default install and data locations:
+
+| Platform | Application files | Private application data |
+| --- | --- | --- |
+| macOS | `~/Library/Application Support/Alfred` | `~/Library/Application Support/Alfred/data` |
+| Windows | `%LOCALAPPDATA%\Alfred` | `%LOCALAPPDATA%\Alfred\data` |
+
+The app binds to `127.0.0.1` by default, so it is reachable only from your own
+computer. The installer never uploads your `.env` or `data` directory to
+GitHub.
+
+For screenshots, plain-language definitions, stopping, updating, backup,
+uninstalling, and common problems, use the
+[complete beginner installation guide](docs/github-install-and-use.md).
+
 ## Current Release Status
 
 The complete five-phase Personal Private OS implementation is available in this
@@ -80,6 +184,7 @@ For the exact status, read
 
 | Path | Best for | Default URL | Current evidence |
 | --- | --- | --- | --- |
+| Release installer + Docker Desktop | First-time Mac and Windows users | `http://127.0.0.1:7000` | Installer and release packaging included; clean-machine qualification is ongoing |
 | Apple Silicon native | Local models using Apple Metal; current reference system | `http://127.0.0.1:7860` | Verified current profile |
 | Docker on macOS/Linux | Reproducible service stack and simpler dependencies | `http://127.0.0.1:7000` | Compose/configuration verified; runtime qualification varies by host |
 | Docker Desktop on Windows | Windows evaluation | `http://127.0.0.1:7000` | Launcher exists; clean Windows acceptance remains open |
@@ -90,13 +195,14 @@ path when local model performance on an M-series Mac matters.
 
 ## Before You Install
 
-You need an approved source checkout or release archive. A public release URL
-and signed tag have not yet been assigned. When one exists, replace the
-placeholders below with the published repository and tag:
+Use a reviewed archive from the
+[official Alfred releases](https://github.com/OriginMediaIE/Alfred/releases)
+for a personal installation. Developers who intentionally need the source can
+clone the repository:
 
 ```bash
-git clone <(https://github.com/OriginMediaIE/Alfred.git)> om-automate
-cd om-automate
+git clone https://github.com/OriginMediaIE/Alfred.git
+cd Alfred
 ```
 
 Do not install from an arbitrary branch when protecting real personal data.
@@ -104,7 +210,7 @@ Record the exact commit, retain a verified encrypted backup, and inspect release
 notes before upgrading.
 
 For a beginner-friendly GitHub install walkthrough, see
-[Beginner Guide: Install And Use OM Automate From GitHub](docs/github-install-and-use.md).
+[Beginner Guide: Install Alfred From GitHub](docs/github-install-and-use.md).
 
 Minimum practical requirements:
 
@@ -261,14 +367,14 @@ From the project directory:
 This validates Docker, Compose, the selected accelerator, data paths, port
 configuration, and network-binding safety without building or starting anything.
 
-### 3. Build and start
+### 3. Pull and start the published image
 
 ```bash
-./install-om-automate.sh
+./install-om-automate.sh --pull
 ```
 
-The installer creates `.env` only when absent, preserves existing data, builds
-the local image, waits for `/api/ready`, and opens:
+The installer creates `.env` only when absent, preserves existing data, pulls
+the published multi-architecture image, waits for `/api/ready`, and opens:
 
 ```text
 http://127.0.0.1:7000
@@ -278,6 +384,7 @@ Useful options:
 
 ```bash
 ./install-om-automate.sh --no-open
+./install-om-automate.sh --pull
 ./install-om-automate.sh --no-build
 ./install-om-automate.sh --accelerator nvidia
 ./install-om-automate.sh --accelerator amd
@@ -315,18 +422,19 @@ must both be covered by the operator's recovery plan.
 
 ## Install on Windows with Docker Desktop
 
-Install Docker Desktop, enable Compose v2, obtain an approved source checkout,
-and open PowerShell in the project directory.
+The beginner route is the downloadable `Alfred-Windows-Installer.zip` described
+at the top of this README. For a source checkout, install Docker Desktop, enable
+Compose v2, and open PowerShell in the project directory.
 
 Run:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-.\install-om-automate.ps1
+.\install-om-automate.ps1 -Pull
 ```
 
-Alternatively, double-click `install-om-automate.cmd`. To use an image that was
-already built:
+Alternatively, double-click `install-om-automate.cmd` to build from source. To
+use an image that is already present locally:
 
 ```powershell
 .\install-om-automate.ps1 -NoBuild
