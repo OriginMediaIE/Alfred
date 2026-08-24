@@ -155,6 +155,8 @@ function _repoLooksGgufLike(model, repo) {
 function _serveBackendWarning(model, repo, backend, fields = {}) {
   const awqLike = _repoLooksAwqLike(model, repo);
   const ggufLike = _repoLooksGgufLike(model, repo);
+  const needsCachedGguf = (backend === 'llamacpp' || backend === 'ollama')
+    && !model?.is_ollama;
   if (awqLike && (backend === 'llamacpp' || backend === 'ollama')) {
     return {
       title: 'AWQ needs vLLM or SGLang',
@@ -171,6 +173,12 @@ function _serveBackendWarning(model, repo, backend, fields = {}) {
     return {
       title: 'AWQ is not a unified-memory path',
       body: 'This model looks like AWQ/GPTQ/FP8 safetensors, but unified-memory local serving expects GGUF. Use vLLM/SGLang on a compatible GPU server, or download a GGUF version for llama.cpp/Ollama.',
+    };
+  }
+  if (needsCachedGguf && !fields.manual_gguf_command && _runnableGgufFiles(model).length === 0) {
+    return {
+      title: 'GGUF file required',
+      body: 'This cached model has no runnable GGUF file. llama.cpp and Ollama cannot load MLX or safetensors weights. Choose MLX on Apple Silicon, choose another compatible backend, or download a GGUF build of the model.',
     };
   }
   if (ggufLike && (backend === 'vllm' || backend === 'sglang')) {
@@ -3148,7 +3156,10 @@ function _rerenderCachedModels() {
           }
         } catch (_e) { /* best-effort */ }
 
-        const backendWarning = _serveBackendWarning(m, repo, serveState.backend, serveState);
+        const backendWarning = _serveBackendWarning(m, repo, serveState.backend, {
+          ...serveState,
+          manual_gguf_command: _cmdManuallyEdited && /\.gguf(?:\s|["'])/i.test(launchCmd),
+        });
         if (backendWarning) {
           _restoreLaunchBtn();
           await window.styledConfirm(backendWarning.body, {

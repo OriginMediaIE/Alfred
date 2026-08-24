@@ -1567,11 +1567,10 @@ def setup_cookbook_routes() -> APIRouter:
         when the launched cmd terminates (success or failure). We poll the
         tmux pane periodically; on a non-zero exit detected within the watch
         window, the endpoint row is deleted so the picker doesn't keep a
-        dead model around. A zero exit (rare for a long-running serve, but
-        possible for fast-failing builds that the runner reports as code 0)
-        and "missing exit marker" both leave the endpoint alone — that's
-        the loading-but-not-yet-bound state, which the probe-marks-offline
-        logic already handles.
+        dead model around. If the tmux session disappears before its exit
+        marker can be captured, an unreachable endpoint is also removed.
+        A zero exit and a missing marker from a live session leave the endpoint
+        alone because the server may still be loading or may have restarted.
 
         Times are picked to outlast realistic vLLM load times (Qwen3.5-122B
         takes ~3 min to load) without burning resources on a stuck-forever
@@ -1596,9 +1595,57 @@ def setup_cookbook_routes() -> APIRouter:
         else:
             capture_cmd = ["tmux", "capture-pane", "-t", session_id, "-p", "-S", "-2000"]
 
+        if remote:
+            check_cmd = ssh_args + [remote, _remote_tmux_command("has-session", "-t", session_id)]
+        else:
+            check_cmd = ["tmux", "has-session", "-t", session_id]
+
+        async def _endpoint_reachable_or_drop(reason: str) -> bool:
+            """Return True when the endpoint is live; otherwise delete its stale row."""
+            try:
+                from core.database import SessionLocal as _SL, ModelEndpoint as _ME
+                db = _SL()
+                try:
+                    ep = db.query(_ME).filter(_ME.id == endpoint_id).first()
+                    if not ep:
+                        return False
+                    probe_url = ep.base_url.rstrip("/") + "/models"
+
+                    def _probe() -> bool:
+                        with urllib.request.urlopen(probe_url, timeout=3) as resp:
+                            return 200 <= getattr(resp, "status", 0) < 300
+
+                    try:
+                        reachable = await asyncio.to_thread(_probe)
+                    except Exception:
+                        reachable = False
+                    if reachable:
+                        logger.info(
+                            "crash-watchdog: %s but endpoint %s is reachable; leaving it registered",
+                            reason,
+                            ep.id,
+                        )
+                        return True
+                    logger.info(
+                        "crash-watchdog: dropping endpoint %s (%s @ %s) - %s",
+                        endpoint_id,
+                        ep.name,
+                        ep.base_url,
+                        reason,
+                    )
+                    db.delete(ep)
+                    db.commit()
+                    return False
+                finally:
+                    db.close()
+            except Exception as e:
+                logger.warning(f"crash-watchdog: endpoint cleanup failed: {e!r}")
+                return False
+
         _exit_re = re.compile(r"=== Process exited with code (-?\d+) ===")
         for wait_s in _waits:
             await asyncio.sleep(wait_s)
+            capture_ok = False
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *capture_cmd,
@@ -1607,14 +1654,31 @@ def setup_cookbook_routes() -> APIRouter:
                 )
                 stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=8)
                 output = stdout.decode("utf-8", errors="replace")
+                capture_ok = proc.returncode == 0
             except Exception as e:
                 logger.debug(f"crash-watchdog: capture-pane failed (will retry): {e!r}")
-                continue
+                output = ""
             # Last occurrence wins — a serve that exits/restarts under the
             # runner's "exec bash -i" trail will emit multiple markers; the
             # most-recent code is the one that matters.
             matches = list(_exit_re.finditer(output))
             if not matches:
+                if not capture_ok:
+                    try:
+                        alive_proc = await asyncio.create_subprocess_exec(
+                            *check_cmd,
+                            stdout=asyncio.subprocess.DEVNULL,
+                            stderr=asyncio.subprocess.DEVNULL,
+                        )
+                        await asyncio.wait_for(alive_proc.wait(), timeout=8)
+                        session_alive = alive_proc.returncode == 0
+                    except Exception:
+                        session_alive = False
+                    if not session_alive:
+                        await _endpoint_reachable_or_drop(
+                            f"serve session {session_id} disappeared before readiness"
+                        )
+                        return
                 continue
             try:
                 exit_code = int(matches[-1].group(1))
@@ -1628,39 +1692,8 @@ def setup_cookbook_routes() -> APIRouter:
                 # let the probe layer mark it offline if nothing's listening.
                 logger.info(f"crash-watchdog: serve {session_id} exited cleanly (0); leaving endpoint {endpoint_id}")
                 return
-            # Non-zero exit — drop the endpoint.
-            try:
-                from core.database import SessionLocal as _SL, ModelEndpoint as _ME
-                db = _SL()
-                try:
-                    ep = db.query(_ME).filter(_ME.id == endpoint_id).first()
-                    if ep:
-                        # A scheduled serve can leave old non-zero exit markers
-                        # in tmux scrollback while the current OpenAI endpoint is
-                        # actually alive. Verify reachability before deleting the
-                        # endpoint row; otherwise chats fall back even though the
-                        # served model is ready.
-                        try:
-                            probe_url = ep.base_url.rstrip("/") + "/models"
-                            with urllib.request.urlopen(probe_url, timeout=3) as resp:
-                                if 200 <= getattr(resp, "status", 0) < 300:
-                                    logger.info(
-                                        f"crash-watchdog: serve {session_id} has exit marker {exit_code} "
-                                        f"but endpoint {ep.id} is reachable; leaving it registered"
-                                    )
-                                    return
-                        except Exception:
-                            pass
-                        logger.info(
-                            f"crash-watchdog: dropping endpoint {endpoint_id} "
-                            f"({ep.name} @ {ep.base_url}) — serve exited {exit_code}"
-                        )
-                        db.delete(ep)
-                        db.commit()
-                finally:
-                    db.close()
-            except Exception as e:
-                logger.warning(f"crash-watchdog: endpoint cleanup failed: {e!r}")
+            # Non-zero exit - drop the endpoint unless a restarted process is live.
+            await _endpoint_reachable_or_drop(f"serve exited {exit_code}")
             return
         logger.debug(f"crash-watchdog: no exit marker for {session_id} within window; leaving endpoint {endpoint_id}")
 
