@@ -95,9 +95,8 @@ and signed tag have not yet been assigned. When one exists, replace the
 placeholders below with the published repository and tag:
 
 ```bash
-git clone <OM_AUTOMATE_RELEASE_URL> om-automate
+git clone <[OM_AUTOMATE_RELEASE_URL](https://github.com/OriginMediaIE/Alfred)> om-automate
 cd om-automate
-git checkout <SIGNED_RELEASE_TAG>
 ```
 
 Do not install from an arbitrary branch when protecting real personal data.
