@@ -396,7 +396,37 @@ def _find_line_break(buf):
 EXEC_TIMEOUT = 30  # seconds — shorter than agent's 60s
 STREAM_TIMEOUT = 120  # default for short commands
 MAX_OUTPUT = 200_000  # truncate limit
-TMUX_LOG_DIR = Path(tempfile.gettempdir()) / "odysseus-tmux"
+
+
+def _writable_tmux_log_dir() -> Path:
+    """Return a tmux log dir writable by this OS user.
+
+    Older builds used /tmp/odysseus-tmux for every account. On shared Macs that
+    directory can be left behind by another user with 0700 permissions, which
+    makes later Cookbook launches fail at `tee ... Permission denied`.
+    """
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or str(os.getuid())
+    base = Path(tempfile.gettempdir())
+    candidates = [
+        base / "odysseus-tmux",
+        base / f"odysseus-tmux-{user}",
+        Path.home() / ".cache" / "odysseus" / "tmux",
+    ]
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            probe = candidate / ".write-test"
+            probe.write_text("", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return candidate
+        except OSError:
+            continue
+    fallback = Path.home() / ".cache" / "odysseus" / "tmux"
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback
+
+
+TMUX_LOG_DIR = _writable_tmux_log_dir()
 PTY_UNSUPPORTED_ERROR = "pty_unsupported"
 
 

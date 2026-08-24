@@ -93,6 +93,30 @@ def _venv_root_from_serve_cmd(cmd: str) -> str:
     return ""
 
 
+def _venv_safe_local_mlx_cmd(cmd: str, *, local: bool, in_venv: bool) -> str:
+    """Use the running app venv's Python for local MLX serves.
+
+    Users can successfully install mlx-lm into Odysseus's venv, while the saved
+    serve command still says `python3 -m mlx_lm.server`. On macOS that resolves
+    to Homebrew/system Python in a tmux shell, producing "No module named
+    mlx_lm" even though the install button succeeded.
+    """
+    if not local or not in_venv or "mlx_lm.server" not in (cmd or ""):
+        return cmd
+    try:
+        parts = shlex.split(cmd)
+    except ValueError:
+        return cmd
+    env_re = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+    idx = 0
+    while idx < len(parts) and env_re.match(parts[idx]):
+        idx += 1
+    if idx < len(parts) and parts[idx] in {"python", "python3"}:
+        parts[idx] = sys.executable
+        return shlex.join(parts)
+    return cmd
+
+
 def _append_venv_nvidia_library_path_lines(lines: list[str], *, cmd: str = "") -> None:
     """Expose NVIDIA CUDA runtime wheels bundled inside the active venv.
 
@@ -1876,6 +1900,11 @@ def setup_cookbook_routes() -> APIRouter:
             local=not bool(req.remote_host),
             in_venv=sys.prefix != sys.base_prefix,
         )
+        req.cmd = _venv_safe_local_mlx_cmd(
+            req.cmd,
+            local=not bool(req.remote_host),
+            in_venv=sys.prefix != sys.base_prefix,
+        )
         is_pip_install = bool(req.cmd and "pip install" in req.cmd)
         if is_pip_install:
             # Keep big dependency wheel builds (vLLM, …) off the home filesystem's
@@ -2015,6 +2044,7 @@ def setup_cookbook_routes() -> APIRouter:
         else:
             # ── Linux/Termux: bash + tmux (existing flow) ──
             runner_lines = ["#!/bin/bash"]
+            host_log_dir = str(TMUX_LOG_DIR) if not remote else "/tmp/odysseus-tmux"
             # Mirror every line of stdout+stderr into a persistent log file
             # on the host running the serve. This is the file tail_serve_output
             # reads when the tmux pane has been overwritten by the post-crash
@@ -2025,10 +2055,10 @@ def setup_cookbook_routes() -> APIRouter:
             # the post-crash interactive shell's neofetch banner ALSO gets
             # teed into the log file and `tail -N` returns ONLY the banner —
             # the actual traceback ends up earlier than the tail window.
-            runner_lines.append("mkdir -p /tmp/odysseus-tmux 2>/dev/null || true")
+            runner_lines.append(f"mkdir -p '{_bash_squote(host_log_dir)}' 2>/dev/null || true")
             runner_lines.append("exec 3>&1 4>&2")
             runner_lines.append(
-                f"exec > >(tee -a /tmp/odysseus-tmux/{session_id}.log) 2>&1"
+                f"exec > >(tee -a '{_bash_squote(host_log_dir)}/{session_id}.log') 2>&1"
             )
             runner_lines.extend(_user_shell_path_bootstrap())
             runner_lines.append('ODYSSEUS_PREFLIGHT_EXIT=""')

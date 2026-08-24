@@ -23,6 +23,17 @@ from src.tools._common import _parse_tool_args
 logger = logging.getLogger(__name__)
 
 
+def _cookbook_tmux_log_path(session_id: str, remote: str = "") -> str:
+    if remote:
+        return f"/tmp/odysseus-tmux/{session_id}.log"
+    try:
+        from routes.shell_routes import TMUX_LOG_DIR
+
+        return str(TMUX_LOG_DIR / f"{session_id}.log")
+    except Exception:
+        return f"/tmp/odysseus-tmux/{session_id}.log"
+
+
 def _string_arg(value: Any) -> str:
     return "" if value is None else str(value).strip()
 
@@ -576,7 +587,7 @@ async def do_serve_model(
             )
             note = "" if registered else " (state-write failed — task may not show in UI)"
             where = host or "local"
-            log_path = f"/tmp/odysseus-tmux/{sid}.log"
+            log_path = _cookbook_tmux_log_path(sid, host)
             return {
                 "output": (
                     f"Serving {repo_id} on {where} (session: {sid}){note}\n"
@@ -908,7 +919,7 @@ async def do_tail_serve_output(
     # process and survives the crash unchanged. We only fall back to
     # the pane when the log file doesn't exist (older sessions launched
     # before the tmux+tee wrapper was added).
-    log_path = f"/tmp/odysseus-tmux/{session_id}.log"
+    log_path = _cookbook_tmux_log_path(session_id, remote)
     pane_inner = f"tmux capture-pane -t {shlex.quote(session_id)} -p -S -{tail} 2>/dev/null"
     file_inner = f"tail -n {tail} {shlex.quote(log_path)} 2>/dev/null"
     inner = (

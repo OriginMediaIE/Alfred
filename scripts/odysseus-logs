@@ -30,7 +30,28 @@ from pathlib import Path
 
 
 _APP_LOGS = _REPO_ROOT / "logs"
-_TMUX_LOGS = Path("/tmp/odysseus-tmux")
+
+
+def _writable_tmux_log_dir() -> Path:
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or str(os.getuid())
+    base = Path(os.environ.get("TMPDIR") or "/tmp")
+    for candidate in (
+        base / "odysseus-tmux",
+        base / f"odysseus-tmux-{user}",
+        Path.home() / ".cache" / "odysseus" / "tmux",
+    ):
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            probe = candidate / ".write-test"
+            probe.write_text("", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return candidate
+        except OSError:
+            continue
+    return Path.home() / ".cache" / "odysseus" / "tmux"
+
+
+_TMUX_LOGS = _writable_tmux_log_dir()
 
 
 def _enumerate() -> list[dict]:
