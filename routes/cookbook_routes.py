@@ -101,7 +101,11 @@ def _venv_safe_local_mlx_cmd(cmd: str, *, local: bool, in_venv: bool) -> str:
     to Homebrew/system Python in a tmux shell, producing "No module named
     mlx_lm" even though the install button succeeded.
     """
-    if not local or not in_venv or "mlx_lm.server" not in (cmd or ""):
+    if not local or "mlx_lm.server" not in (cmd or ""):
+        return cmd
+    repo_venv_python = Path(__file__).resolve().parents[1] / "venv" / "bin" / "python"
+    python_bin = sys.executable if in_venv else str(repo_venv_python)
+    if not Path(python_bin).exists():
         return cmd
     try:
         parts = shlex.split(cmd)
@@ -112,7 +116,7 @@ def _venv_safe_local_mlx_cmd(cmd: str, *, local: bool, in_venv: bool) -> str:
     while idx < len(parts) and env_re.match(parts[idx]):
         idx += 1
     if idx < len(parts) and parts[idx] in {"python", "python3"}:
-        parts[idx] = sys.executable
+        parts[idx] = python_bin
         return shlex.join(parts)
     return cmd
 
