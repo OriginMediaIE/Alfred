@@ -7,6 +7,7 @@
 # Shell scripts must stay LF on every platform (run by sh/bash, incl. in Docker).
 *.sh   text eol=lf
 *.bash text eol=lf
+*.command text eol=lf
 entrypoint.sh text eol=lf
 docker/entrypoint.sh text eol=lf
 

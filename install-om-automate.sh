@@ -7,6 +7,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 CHECK_ONLY=0
 NO_OPEN=0
 NO_BUILD=0
+PULL_IMAGE=0
 TIMEOUT_SECONDS=240
 ACCELERATOR="${OM_AUTOMATE_ACCELERATOR:-cpu}"
 
@@ -18,6 +19,7 @@ usage() {
     "" \
     "  --check             Validate the host/config without pulling or building" \
     "  --no-build          Start the already-built exact local image" \
+    "  --pull              Pull the published image instead of building locally" \
     "  --no-open           Do not open a browser after the health gate" \
     "  --accelerator NAME  cpu (default), nvidia, or amd" \
     "  --timeout SECONDS   Health wait limit (default: 240)" \
@@ -28,6 +30,7 @@ while (($#)); do
   case "$1" in
     --check) CHECK_ONLY=1 ;;
     --no-build) NO_BUILD=1 ;;
+    --pull) PULL_IMAGE=1; NO_BUILD=1 ;;
     --no-open) NO_OPEN=1 ;;
     --accelerator)
       shift
@@ -115,6 +118,8 @@ DATA_PATH_RAW="${APP_DATA_DIR:-$(read_env_value APP_DATA_DIR)}"
 DATA_PATH_RAW="${DATA_PATH_RAW:-./data}"
 DATA_PATH="$(validate_data_path "$DATA_PATH_RAW")"
 printf 'Data path: %s\n' "$DATA_PATH"
+FIRST_BOOT=0
+[[ -f "$DATA_PATH/auth.json" ]] || FIRST_BOOT=1
 
 BIND_VALUE="${APP_BIND:-$(read_env_value APP_BIND)}"
 BIND_VALUE="${BIND_VALUE:-127.0.0.1}"
@@ -152,8 +157,12 @@ cleanup() { rmdir "$LOCK_DIR" 2>/dev/null || true; }
 trap cleanup EXIT INT TERM
 
 step "Starting exact OM Automate services"
-if ((NO_BUILD)); then
-  docker compose "${COMPOSE_ARGS[@]}" up -d
+if ((PULL_IMAGE)); then
+  step "Downloading the published OM Automate images"
+  docker compose "${COMPOSE_ARGS[@]}" pull
+  docker compose "${COMPOSE_ARGS[@]}" up -d --no-build
+elif ((NO_BUILD)); then
+  docker compose "${COMPOSE_ARGS[@]}" up -d --no-build
 else
   docker compose "${COMPOSE_ARGS[@]}" up -d --build
 fi
@@ -176,6 +185,19 @@ done
 docker compose "${COMPOSE_ARGS[@]}" ps
 printf '\n%s is live at %s and ready at %s\n' "$APP_NAME" "$HEALTH_URL" "$READY_URL"
 printf 'Your existing .env and data directory were preserved.\n'
+
+if ((FIRST_BOOT)); then
+  FIRST_LOGIN_LINE="$(docker compose "${COMPOSE_ARGS[@]}" logs --no-color odysseus 2>/dev/null | awk '/Temporary password:/ {line=$0} END {print line}')"
+  printf '\nFirst login\n'
+  printf '  Username: admin\n'
+  if [[ -n "$FIRST_LOGIN_LINE" ]]; then
+    printf '  Temporary password: %s\n' "${FIRST_LOGIN_LINE#*Temporary password:}"
+    printf '  Change this password after signing in.\n'
+  else
+    printf '  Run: docker compose logs odysseus\n'
+    printf '  Look for the most recent "Temporary password" line.\n'
+  fi
+fi
 
 if ((NO_OPEN == 0)); then
   case "$(uname -s)" in

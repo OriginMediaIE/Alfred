@@ -1,0 +1,70 @@
+name: Release beginner installers
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing GitHub release tag to receive the installer assets
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Select release tag
+        id: release
+        env:
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${EVENT_TAG:-$INPUT_TAG}"
+          test -n "$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Package macOS and Windows installers
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/macos dist/windows
+          cp installers/Install-Alfred.command dist/macos/
+          cp installers/Install-Alfred.cmd installers/Install-Alfred.ps1 dist/windows/
+          chmod 755 dist/macos/Install-Alfred.command
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path("dist/macos/Install-Alfred.command")
+          text = path.read_text(encoding="utf-8")
+          text = text.replace('${ALFRED_RELEASE_REF:-latest}', '${ALFRED_RELEASE_REF:-' + os.environ['RELEASE_TAG'] + '}')
+          path.write_text(text, encoding="utf-8")
+
+          path = Path("dist/windows/Install-Alfred.ps1")
+          text = path.read_text(encoding="utf-8")
+          text = text.replace('else { "latest" }', 'else { "' + os.environ['RELEASE_TAG'].replace('"', '') + '" }', 1)
+          path.write_text(text, encoding="utf-8")
+          PY
+          (cd dist/macos && zip -X ../Alfred-macOS-Installer.zip Install-Alfred.command)
+          (cd dist/windows && zip -X ../Alfred-Windows-Installer.zip Install-Alfred.cmd Install-Alfred.ps1)
+          (cd dist && sha256sum Alfred-*-Installer.zip > SHA256SUMS.txt)
+
+      - name: Upload installer assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            dist/Alfred-macOS-Installer.zip \
+            dist/Alfred-Windows-Installer.zip \
+            dist/SHA256SUMS.txt \
+            --clobber

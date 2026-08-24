@@ -70,6 +70,24 @@ def test_posix_installer_full_flow_is_readiness_gated_and_rerunnable(tmp_path):
     assert docker_calls.count("compose -f docker-compose.yml ps") == 2
 
 
+def test_posix_installer_can_pull_published_images_without_building(tmp_path):
+    root, env, log = _installer_fixture(tmp_path)
+    result = subprocess.run(
+        ["bash", str(root / "install-om-automate.sh"), "--pull", "--no-open"],
+        cwd=root,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    docker_calls = log.read_text(encoding="utf-8")
+    assert "compose -f docker-compose.yml pull" in docker_calls
+    assert "compose -f docker-compose.yml up -d --no-build" in docker_calls
+    assert "up -d --build" not in docker_calls
+
+
 def test_posix_installer_readiness_timeout_fails_and_releases_lock(tmp_path):
     root, env, log = _installer_fixture(tmp_path)
     fake_curl = Path(env["PATH"].split(os.pathsep, 1)[0]) / "curl"
@@ -166,10 +184,11 @@ def test_runtime_and_service_images_are_exactly_versioned():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     lock = (ROOT / "requirements-om.lock").read_text(encoding="utf-8")
 
-    assert dockerfile.count("python:3.14.6-slim-bookworm") == 2
+    assert dockerfile.count("python:3.14.7-slim-bookworm") == 2
     assert "requirements-om.lock" in dockerfile
     assert "chromadb/chroma:1.5.9" in compose
     assert "binwiederhier/ntfy:v2.26.0" in compose
+    assert "ghcr.io/originmediaie/alfred:1.0.2" in compose
     assert ":latest" not in compose
     active = [line for line in lock.splitlines() if line and not line.startswith("#")]
     assert active and all("==" in line for line in active)
@@ -192,3 +211,23 @@ def test_installers_expose_preflight_and_health_contracts():
     assert "SECURE_COOKIES=true" in shell and "SECURE_COOKIES=true" in powershell
     assert (ROOT / "install-om-automate.command").stat().st_mode & stat.S_IXUSR
     assert (ROOT / "install-om-automate.cmd").is_file()
+
+
+def test_beginner_installers_and_launchers_are_release_ready():
+    mac_installer = ROOT / "installers" / "Install-Alfred.command"
+    windows_installer = ROOT / "installers" / "Install-Alfred.ps1"
+    workflow = ROOT / ".github" / "workflows" / "release-installers.yml"
+
+    subprocess.run(["bash", "-n", str(mac_installer)], check=True)
+    subprocess.run(["bash", "-n", str(ROOT / "Start-Alfred.command")], check=True)
+    subprocess.run(["bash", "-n", str(ROOT / "scripts" / "install-docker-launcher.sh")], check=True)
+    assert mac_installer.stat().st_mode & stat.S_IXUSR
+    assert "OriginMediaIE/Alfred" in mac_installer.read_text(encoding="utf-8")
+    assert "--exclude='.env'" in mac_installer.read_text(encoding="utf-8")
+    assert "--pull" in mac_installer.read_text(encoding="utf-8")
+    assert "OriginMediaIE/Alfred" in windows_installer.read_text(encoding="utf-8")
+    assert "/XF .env" in windows_installer.read_text(encoding="utf-8")
+    assert "-Pull" in windows_installer.read_text(encoding="utf-8")
+    assert "Alfred-macOS-Installer.zip" in workflow.read_text(encoding="utf-8")
+    assert "Alfred-Windows-Installer.zip" in workflow.read_text(encoding="utf-8")
+    assert (ROOT / "Start-Alfred.ps1").is_file()
