@@ -1117,6 +1117,8 @@ def _parse_serve_phase(snapshot: str, task_type: str = "serve") -> dict:
         }
     if "Application startup complete" in flat:
         return {"phase": "ready", "status": "ready"}
+    if re.search(r'llama_server:\s+server is listening on\s+https?://', flat, re.I):
+        return {"phase": "ready", "status": "ready"}
     if re.search(r'Ollama API ready on port\s+\d+', flat, re.I):
         return {"phase": "ready", "status": "ready"}
     # HTTP access logs (e.g. GET /v1/models 200 OK) mean the server is up and serving
