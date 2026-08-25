@@ -49,7 +49,9 @@ what is missing; it does not silently install privileged system software.
 
 1. Install and open [Docker Desktop for Mac](https://www.docker.com/products/docker-desktop/).
 2. Open the [latest Alfred release](https://github.com/OriginMediaIE/Alfred/releases/latest).
-3. Under **Assets**, download `Alfred-macOS-Installer.zip`.
+3. Expand **Assets** on that Release page and download
+   `Alfred-macOS-Installer.zip`. **Assets is a section of a GitHub Release, not
+   a folder in the repository's Code tab.**
 4. Double-click the ZIP, then double-click `Install-Alfred.command`.
 5. If macOS asks whether Terminal may open the file, choose **Open**.
 6. Leave the installer window open. The first download may take several
@@ -67,7 +69,9 @@ required.
 
 1. Install and open [Docker Desktop for Windows](https://www.docker.com/products/docker-desktop/).
 2. Open the [latest Alfred release](https://github.com/OriginMediaIE/Alfred/releases/latest).
-3. Under **Assets**, download `Alfred-Windows-Installer.zip`.
+3. Expand **Assets** on that Release page and download
+   `Alfred-Windows-Installer.zip`. **Assets is a section of a GitHub Release,
+   not a folder in the repository's Code tab.**
 4. Right-click the ZIP and choose **Extract All**.
 5. Open the extracted folder and double-click `Install-Alfred.cmd`.
 6. If Windows asks for permission, confirm that the file came from the Alfred

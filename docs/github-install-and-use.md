@@ -79,7 +79,8 @@ close the main Docker window after it has started.
 ### Step 3: Download the Alfred installer
 
 1. Open the [latest Alfred release](https://github.com/OriginMediaIE/Alfred/releases/latest).
-2. Scroll to the **Assets** section.
+2. Scroll to the **Assets** section on that Release page. Assets is not a
+   folder in the repository's **Code** tab.
 3. Click `Alfred-macOS-Installer.zip`.
 4. Wait for the download to finish.
 5. Open your **Downloads** folder.
@@ -179,7 +180,8 @@ Leave Docker Desktop running while you install Alfred.
 ### Step 3: Download and extract the Alfred installer
 
 1. Open the [latest Alfred release](https://github.com/OriginMediaIE/Alfred/releases/latest).
-2. Scroll to **Assets**.
+2. Scroll to **Assets** on that Release page. Assets is not a folder in the
+   repository's **Code** tab.
 3. Click `Alfred-Windows-Installer.zip`.
 4. Open your **Downloads** folder.
 5. Right-click the downloaded ZIP and choose **Extract All**.
@@ -362,6 +364,15 @@ Check that the ZIP came from `github.com/OriginMediaIE/Alfred`. Choose **More
 info → Run anyway** only when that source is correct. The release artifacts are
 not yet code-signed with a commercial Windows certificate.
 
+### I cannot see an Assets section
+
+Make sure you opened the
+[Releases page](https://github.com/OriginMediaIE/Alfred/releases), not the
+repository's **Code** tab. Each published release has its own expandable
+**Assets** section. If a newly published version has only appeared moments ago,
+refresh after its packaging workflow finishes. The two expected files are
+`Alfred-macOS-Installer.zip` and `Alfred-Windows-Installer.zip`.
+
 ### The page does not open
 
 Try [http://127.0.0.1:7000](http://127.0.0.1:7000) directly. In Docker Desktop,
@@ -460,8 +471,9 @@ hash with the downloaded ZIP before running it.
 
 ## Maintainer: publish the installer assets
 
-The repository workflow `.github/workflows/release-installers.yml` attaches the
-two installer ZIPs and `SHA256SUMS.txt` whenever a GitHub release is published.
-The release should point at a reviewed tag. After publishing, verify that both
-ZIPs download, extract, and target that release tag before announcing it to
-beginners.
+The repository workflow `.github/workflows/release-installers.yml` creates the
+GitHub Release and attaches both installer ZIPs plus `SHA256SUMS.txt` whenever a
+reviewed version tag such as `v1.0.2` is pushed. It can also repair an existing
+release through **Run workflow** by supplying the tag. After publication,
+verify that both ZIPs download, extract, and target that exact release tag
+before announcing it to beginners.

@@ -230,4 +230,6 @@ def test_beginner_installers_and_launchers_are_release_ready():
     assert "-Pull" in windows_installer.read_text(encoding="utf-8")
     assert "Alfred-macOS-Installer.zip" in workflow.read_text(encoding="utf-8")
     assert "Alfred-Windows-Installer.zip" in workflow.read_text(encoding="utf-8")
+    assert "gh release create" in workflow.read_text(encoding="utf-8")
+    assert "tags:" in workflow.read_text(encoding="utf-8")
     assert (ROOT / "Start-Alfred.ps1").is_file()

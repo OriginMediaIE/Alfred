@@ -1,12 +1,13 @@
 name: Release beginner installers
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing GitHub release tag to receive the installer assets
+        description: Existing version tag to create or repair a GitHub release
         required: true
         type: string
 
@@ -20,15 +21,23 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       - name: Select release tag
         id: release
         env:
-          EVENT_TAG: ${{ github.event.release.tag_name }}
+          EVENT_TAG: ${{ github.ref_name }}
           INPUT_TAG: ${{ inputs.tag }}
         run: |
-          tag="${EVENT_TAG:-$INPUT_TAG}"
-          test -n "$tag"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            tag="$INPUT_TAG"
+          else
+            tag="$EVENT_TAG"
+          fi
+          case "$tag" in
+            v[0-9]*) ;;
+            *) echo "Release tags must start with v followed by a number." >&2; exit 1 ;;
+          esac
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Package macOS and Windows installers
@@ -58,13 +67,23 @@ jobs:
           (cd dist/windows && zip -X ../Alfred-Windows-Installer.zip Install-Alfred.cmd Install-Alfred.ps1)
           (cd dist && sha256sum Alfred-*-Installer.zip > SHA256SUMS.txt)
 
-      - name: Upload installer assets
+      - name: Create or update the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
-          gh release upload "$RELEASE_TAG" \
-            dist/Alfred-macOS-Installer.zip \
-            dist/Alfred-Windows-Installer.zip \
-            dist/SHA256SUMS.txt \
-            --clobber
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" \
+              dist/Alfred-macOS-Installer.zip \
+              dist/Alfred-Windows-Installer.zip \
+              dist/SHA256SUMS.txt \
+              --clobber
+          else
+            gh release create "$RELEASE_TAG" \
+              dist/Alfred-macOS-Installer.zip \
+              dist/Alfred-Windows-Installer.zip \
+              dist/SHA256SUMS.txt \
+              --verify-tag \
+              --title "Alfred $RELEASE_TAG" \
+              --generate-notes
+          fi
