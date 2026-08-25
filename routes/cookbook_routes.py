@@ -1748,6 +1748,16 @@ def setup_cookbook_routes() -> APIRouter:
             host = remote.split("@")[-1] if "@" in remote else remote
         elif re.search(r"\bdocker\s+exec\s+(?:ollama-rocm|ollama-test)\b", req.cmd or ""):
             host = "host.docker.internal"
+        elif (
+            not remote
+            and re.match(r"^ollama\s+show\s+\S+$", (req.cmd or "").strip())
+            and not shutil.which("ollama")
+        ):
+            # Runtime-neutral Ollama probe with no native `ollama` here: the
+            # runner will fall back to the ollama-rocm/ollama-test sidecar,
+            # whose daemon is published on the Docker host, not in this
+            # container. Matches the legacy `docker exec` branch above.
+            host = "host.docker.internal"
         else:
             host = "localhost"
 
@@ -2512,14 +2522,37 @@ def setup_cookbook_routes() -> APIRouter:
                 runner_lines.append('fi')
 
             handled_ollama_sidecar_probe = False
-            if (not handled_ollama_serve
-                and re.search(r"\bdocker\s+exec\s+(?:ollama-rocm|ollama-test)\s+ollama\s+show\b", req.cmd or "")):
+            _legacy_sidecar_probe = re.search(
+                r"\bdocker\s+exec\s+(?:ollama-rocm|ollama-test)\s+ollama\s+show\b", req.cmd or ""
+            )
+            _neutral_show_probe = (
+                not _legacy_sidecar_probe
+                and re.match(r"^ollama\s+show\s+\S+$", (req.cmd or "").strip()) is not None
+            )
+            if not handled_ollama_serve and (_legacy_sidecar_probe or _neutral_show_probe):
                 handled_ollama_sidecar_probe = True
                 _append_serve_preflight_exit_lines(
                     runner_lines,
                     keep_shell_open=not local_windows,
                 )
-                runner_lines.append(req.cmd)
+                if _neutral_show_probe:
+                    # Resolve the Ollama runtime at launch time instead of
+                    # assuming a sidecar container exists. Mirrors the download
+                    # path in _append_local_ollama_download_command_lines:
+                    # native `ollama` on PATH wins, then an ollama-rocm /
+                    # ollama-test container, otherwise a clear error.
+                    runner_lines.append('if command -v ollama >/dev/null 2>&1; then')
+                    runner_lines.append(f'  ODYSSEUS_OLLAMA_SHOW_CMD={shlex.quote(req.cmd.strip())}')
+                    runner_lines.append('elif command -v docker >/dev/null 2>&1; then')
+                    runner_lines.append("  ODYSSEUS_OLLAMA_CONTAINER=\"$(docker ps --format '{{.Names}}' 2>/dev/null | grep -E '^(ollama-rocm|ollama-test)$' | head -1)\"")
+                    runner_lines.append('  if [ -n "$ODYSSEUS_OLLAMA_CONTAINER" ]; then')
+                    runner_lines.append(f'    ODYSSEUS_OLLAMA_SHOW_CMD={shlex.quote("docker exec ${ODYSSEUS_OLLAMA_CONTAINER} " + req.cmd.strip())}')
+                    runner_lines.append('  fi')
+                    runner_lines.append('fi')
+                    runner_lines.append('if [ -z "$ODYSSEUS_OLLAMA_SHOW_CMD" ]; then echo "ERROR: Ollama not found on this host. Install Ollama or start an ollama-rocm/ollama-test container."; exit 127; fi')
+                    runner_lines.append('eval "$ODYSSEUS_OLLAMA_SHOW_CMD"')
+                else:
+                    runner_lines.append(req.cmd)
                 runner_lines.append('_ody_exit=$?')
                 runner_lines.append('echo')
                 runner_lines.append('echo "=== Process exited with code ${_ody_exit} ==="')
