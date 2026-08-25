@@ -530,6 +530,7 @@ _FENCE_TOOL_NAMES = frozenset(
         "manage_settings",
         "manage_notes",
         "manage_calendar",
+        "query_calendar",
         "resolve_contact",
         "manage_contact",
         "download_model",
@@ -625,6 +626,7 @@ PLAN_MODE_ALLOWED_TOOL_NAMES = frozenset(
         "query_work",
         "query_gmail",
         "query_google_calendar",
+        "query_calendar",
         "search_meetings",
         "query_knowledge",
         "query_dashboard",
@@ -729,6 +731,7 @@ _DOMAIN_GROUPS = {
     "notes": {"manage_notes"},
     "calendar": {
         "manage_calendar",
+        "query_calendar",
         "query_google_calendar",
         "create_google_calendar_hold",
         "create_google_calendar_event",
@@ -1372,6 +1375,11 @@ _CLASSIFIED_POLICIES = {
         "email.attachments.download",
         timeout=120,
         compensation="delete_downloaded_attachment",
+    ),
+    "query_calendar": _read_policy(
+        "calendar.read",
+        timeout=30,
+        audit_behavior=AuditBehavior.REDACTED,
     ),
     "query_google_calendar": _read_policy(
         "calendar.read",

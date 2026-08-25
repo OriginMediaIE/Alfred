@@ -49,7 +49,7 @@ ALWAYS_AVAILABLE = frozenset({
 ASSISTANT_ALWAYS_AVAILABLE = frozenset({
     "list_email_accounts", "list_emails", "read_email", "send_email", "reply_to_email",
     "bulk_email", "archive_email", "delete_email", "mark_email_read",
-    "manage_calendar", "manage_notes", "manage_tasks",
+    "manage_calendar", "query_calendar", "manage_notes", "manage_tasks",
     "query_work", "manage_work", "delete_work",
     "query_gmail", "manage_gmail_draft", "send_gmail",
     "modify_gmail_message", "delete_gmail", "download_gmail_attachment",
@@ -164,6 +164,7 @@ BUILTIN_TOOL_DESCRIPTIONS: Dict[str, str] = {
     "manage_contact": "Save / update / delete / list address-book contacts (CardDAV). Use for info about ANOTHER person — name, email, phone, postal address. Args: action=list|add|update|delete, name, email, phones, address, uid (from list). For 'save this for <person>' / address pastes / phone numbers next to a name, this is the right tool — NOT manage_memory. Do NOT use for facts about the USER ('my name is X'); those are manage_memory.",
     "manage_notes": "Create and manage notes and checklists (Google Keep-style). ALWAYS use this for note/todo/checklist/reminder creation — NEVER hit /api/notes via app_api. Accepts natural-language `due_date` like 'tomorrow at 9am' or '11pm today' (parsed in the USER'S timezone). The due_date IS the reminder — it fires a notification at that time, so do NOT also create a calendar event for the same reminder. Set colors, labels, pin, archive. Do NOT use manage_memory for note content.",
     "manage_calendar": "Calendar event management: list, create, update, delete. Each event can carry a tag/category (event_type — work/personal/health/travel/meal/social/admin/other) and importance (low/normal/high/critical). Resolve today/tomorrow using the Current date and time context, then use ISO datetimes in the user's local wall time; supports all-day events. Use rrule only for explicit recurrence; for update_event pass rrule='' to remove repeats. For event reminders/alarms, pass reminder_minutes; this creates the Notes reminder, so do not also call manage_notes for the same reminder.",
+    "query_calendar": "READ-ONLY view of the user's primary built-in calendar: list events in a date range or list calendar names. Use for any 'what's on my calendar / my schedule / am I free' question — no approval required.",
     "download_model": "Download a HuggingFace model to a local or remote server. Specify repo_id (e.g. 'Qwen/Qwen3-8B'), optional server host, and optional include filter for specific files.",
     "serve_model": "Start serving a model with vLLM, SGLang, llama.cpp, Ollama, or Diffusers. cmd MUST start with the binary directly — e.g. `vllm serve /mnt/HADES/models/Qwen3.5-397B-A17B-AWQ --port 8003 --tensor-parallel-size 8 …`. NEVER prefix with `cd …`, `source …`, or chain with `&&`/`||` — those get rejected by the validator. The venv activation (env_prefix) and CUDA env are added automatically from the target host's saved settings. For image/inpainting/diffusion use python3 scripts/diffusion_server.py --model <repo> --port 8100. After launch, call list_served_models for readiness/errors and retry suggestions. If serve_model fails with 'Invalid characters in cmd', simplify to the bare binary + args.",
     "list_served_models": "List currently running model servers in the Cookbook — shows status (loading, ready, idle, error), model name, port, throughput, and serve failure diagnosis/retry suggestions. Use when the user asks 'what's running', 'show my cookbook', 'which models are up', 'what's serving'.",
@@ -394,13 +395,13 @@ class ToolIndex:
         frozenset({"email", "emails", "mail", "mails", "gmail", "googlemail", "message", "messages", "send", "reply", "replies", "inbox", "unread"}):
             {"list_email_accounts", "list_emails", "read_email", "send_email", "reply_to_email", "bulk_email", "delete_email", "archive_email", "mark_email_read", "query_gmail", "manage_gmail_draft", "send_gmail", "modify_gmail_message", "delete_gmail", "download_gmail_attachment", "resolve_contact", "ui_control"},
         frozenset({"calendar", "event", "meeting", "schedule", "appointment"}):
-            {"manage_calendar", "query_google_calendar", "create_google_calendar_hold", "create_google_calendar_event", "update_google_calendar_event", "respond_google_calendar_invitation", "update_google_calendar_attendees", "delete_google_calendar_event", "search_meetings", "create_meeting", "request_meeting_transcription", "approve_meeting_action_item", "save_meeting_knowledge", "delete_meeting"},
+            {"manage_calendar", "query_calendar", "query_google_calendar", "create_google_calendar_hold", "create_google_calendar_event", "update_google_calendar_event", "respond_google_calendar_invitation", "update_google_calendar_attendees", "delete_google_calendar_event", "search_meetings", "create_meeting", "request_meeting_transcription", "approve_meeting_action_item", "save_meeting_knowledge", "delete_meeting"},
         frozenset({"transcript", "transcription", "speaker", "diarization", "recording", "audio", "action item", "meeting notes"}):
             {"search_meetings", "create_meeting", "request_meeting_transcription", "approve_meeting_action_item", "save_meeting_knowledge", "delete_meeting", "query_work", "manage_work", "query_knowledge"},
         frozenset({"knowledge", "knowledge base", "source", "sources", "citation", "citations", "memory", "memories", "index", "rebuild index"}):
             {"query_knowledge", "manage_knowledge", "delete_knowledge", "save_meeting_knowledge", "manage_memory"},
         frozenset({"today", "dashboard", "morning briefing", "evening review", "weekly review", "daily briefing", "my day"}):
-            {"query_dashboard", "query_work", "query_google_calendar", "query_gmail", "search_meetings", "query_knowledge"},
+            {"query_dashboard", "query_work", "query_calendar", "query_google_calendar", "query_gmail", "search_meetings", "query_knowledge"},
         frozenset({"automation", "automations", "workflow", "workflows", "trigger", "webhook", "recurring", "polling", "run history"}):
             {"query_automations", "manage_automation", "delete_automation", "manage_tasks"},
         frozenset({"relationship", "contact profile", "follow up", "renewal", "subscription", "warranty", "insurance", "membership", "household", "trip", "flight", "accommodation", "packing", "travel document"}):

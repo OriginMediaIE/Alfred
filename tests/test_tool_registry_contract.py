@@ -101,6 +101,7 @@ EXPECTED_BUILTIN_TOOL_NAMES = frozenset(
         "python",
         "query_gmail",
         "query_google_calendar",
+        "query_calendar",
         "query_work",
         "read_email",
         "read_file",
@@ -163,6 +164,7 @@ EXPECTED_PLAN_MODE_ALLOWED_TOOL_NAMES = frozenset(
         "query_work",
         "query_gmail",
         "query_google_calendar",
+        "query_calendar",
         "search_meetings",
         "query_knowledge",
         "query_dashboard",
@@ -231,14 +233,14 @@ def test_golden_inventory_accounts_for_every_current_builtin_capability() -> Non
 
     assert BUILTIN_TOOL_NAMES == EXPECTED_BUILTIN_TOOL_NAMES
     assert registry.names() == EXPECTED_BUILTIN_TOOL_NAMES
-    assert len(registry) == 109
+    assert len(registry) == 110
 
 
 def test_plan_mode_compatibility_allowlist_is_frozen_and_complete() -> None:
     disabled = BUILTIN_TOOL_NAMES - PLAN_MODE_ALLOWED_TOOL_NAMES
 
     assert PLAN_MODE_ALLOWED_TOOL_NAMES == EXPECTED_PLAN_MODE_ALLOWED_TOOL_NAMES
-    assert len(PLAN_MODE_ALLOWED_TOOL_NAMES) == 29
+    assert len(PLAN_MODE_ALLOWED_TOOL_NAMES) == 30
     assert PLAN_MODE_ALLOWED_TOOL_NAMES <= BUILTIN_TOOL_NAMES
     assert not PLAN_MODE_ALLOWED_TOOL_NAMES & disabled
     assert PLAN_MODE_ALLOWED_TOOL_NAMES | disabled == BUILTIN_TOOL_NAMES
@@ -531,6 +533,7 @@ def test_google_workspace_tools_are_split_by_external_effect() -> None:
 
     assert registry.resolve("query_gmail").risk is RiskLevel.LEVEL_0
     assert registry.resolve("query_google_calendar").risk is RiskLevel.LEVEL_0
+    assert registry.resolve("query_calendar").risk is RiskLevel.LEVEL_0
     assert registry.resolve("manage_gmail_draft").risk is RiskLevel.LEVEL_1
     assert registry.resolve("create_google_calendar_hold").risk is RiskLevel.LEVEL_1
     assert registry.resolve("send_gmail").risk is RiskLevel.LEVEL_2

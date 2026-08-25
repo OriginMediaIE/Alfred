@@ -849,6 +849,7 @@ _LEGACY_DOMAIN_BINDINGS: Mapping[str, tuple[str, str, str]] = {
     "app_api": ("src.tools.system", "do_app_api", "owner"),
     "manage_notes": ("src.tools.notes", "do_manage_notes", "owner"),
     "manage_calendar": ("src.tools.calendar", "do_manage_calendar", "owner"),
+    "query_calendar": ("src.tools.calendar", "do_query_calendar", "owner"),
     "download_model": ("src.tools.cookbook", "do_download_model", "owner"),
     "serve_model": ("src.tools.cookbook", "do_serve_model", "owner_request"),
     "list_served_models": (

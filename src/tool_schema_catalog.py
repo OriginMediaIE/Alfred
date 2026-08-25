@@ -546,8 +546,26 @@ FUNCTION_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "query_calendar",
+            "description": "READ the user's PRIMARY built-in calendar (local storage) — no approval needed. Use for any 'what's on my calendar / my events / my schedule / am I free' question. list_events returns events in a date range (defaults to the next 14 days when no dates are given); list_calendars lists calendar names. To create/update/delete events use manage_calendar.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["list_events", "list_calendars"],
+                               "description": "list_events (default) or list_calendars"},
+                    "start": {"type": "string", "description": "Range start, ISO 8601 local time (optional; defaults to today)"},
+                    "end": {"type": "string", "description": "Range end, ISO 8601 local time (optional; defaults to start + 14 days)"},
+                    "calendar": {"type": "string", "description": "Restrict to one calendar by name (optional)"},
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "manage_calendar",
-            "description": "Manage calendar events: list events in a date range, create, update, delete. Each event can carry a tag/category (event_type) and importance level. Resolve relative dates like today/tomorrow against the 'Current date and time' system context, then pass ISO 8601 datetimes in the user's local wall time; for all-day events set all_day=true and pass YYYY-MM-DD. For event reminders/alarms, pass reminder_minutes; the tool creates the OM Automate note reminder, so do not also call manage_notes for the same reminder. Do not set rrule for single-occurrence requests such as 'next Wednesday only'; use rrule only when the user explicitly wants recurrence.",
+            "description": "The user's PRIMARY built-in calendar (local storage). Use for any 'my calendar / my events / my schedule' request: list events in a date range, create, update, delete. Each event can carry a tag/category (event_type) and importance level. Resolve relative dates like today/tomorrow against the 'Current date and time' system context, then pass ISO 8601 datetimes in the user's local wall time; for all-day events set all_day=true and pass YYYY-MM-DD. For event reminders/alarms, pass reminder_minutes; the tool creates the OM Automate note reminder, so do not also call manage_notes for the same reminder. Do not set rrule for single-occurrence requests such as 'next Wednesday only'; use rrule only when the user explicitly wants recurrence.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1012,6 +1030,21 @@ FUNCTION_TOOL_SCHEMAS = [
                     "topic": {"type": "string", "description": "Research question or topic"},
                 },
                 "required": ["topic"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "manage_research",
+            "description": "List, read/open, or delete saved deep-research results from the Library. Use for ANY 'open/read/find/delete my research / that report / the research on X' request. This is for EXISTING research; to START new research use trigger_research.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["list", "read", "delete"], "description": "list saved research, read one report by id, or delete one by id"},
+                    "id": {"type": "string", "description": "Research id from action='list' (required for read/delete)"},
+                },
+                "required": ["action"]
             }
         }
     },

@@ -14,6 +14,38 @@ from src.tools._common import _parse_tool_args
 logger = logging.getLogger(__name__)
 
 
+async def do_query_calendar(content: str, owner: Optional[str] = None) -> Dict:
+    """Read-only calendar access: list_events / list_calendars only.
+
+    Split from do_manage_calendar so plain reads ("what's on my calendar")
+    run under a LEVEL_0 read policy with no approval gate, mirroring the
+    query_google_calendar / mutation-tool split. Any mutating action passed
+    here is redirected to manage_calendar instead of being executed.
+    """
+    try:
+        args = _parse_tool_args(content) if (content or "").strip().startswith("{") else {}
+    except ValueError:
+        return {"error": "Invalid JSON arguments", "exit_code": 1}
+    if not isinstance(args, dict):
+        args = {}
+    action = (str(args.get("action") or "list_events")).replace("-", "_").strip().lower()
+    if action in ("list", "list_event", "events", "search"):
+        action = "list_events"
+    if action in ("calendars", "list_calendar"):
+        action = "list_calendars"
+    if action not in ("list_events", "list_calendars"):
+        return {
+            "error": (
+                f"query_calendar is read-only (got action={action!r}). "
+                "Use manage_calendar for create_event/update_event/delete_event."
+            ),
+            "exit_code": 1,
+        }
+    args["action"] = action
+    import json as _json
+    return await do_manage_calendar(_json.dumps(args), owner=owner)
+
+
 async def do_manage_calendar(content: str, owner: Optional[str] = None) -> Dict:
     """Handle manage_calendar tool calls: list/create/update/delete calendar events (local SQLite)."""
     from datetime import datetime, timedelta

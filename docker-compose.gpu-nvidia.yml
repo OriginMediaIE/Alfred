@@ -1,7 +1,7 @@
 # Generated from docker-compose.yml plus docker/gpu.nvidia.yml.
 services:
   odysseus:
-    image: om-automate:1.0.2
+    image: ${OM_AUTOMATE_IMAGE:-ghcr.io/originmediaie/alfred:1.0.2}
     build: .
     labels:
       org.opencontainers.image.title: OM Automate
