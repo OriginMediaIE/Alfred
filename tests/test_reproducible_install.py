@@ -217,6 +217,7 @@ def test_beginner_installers_and_launchers_are_release_ready():
     mac_installer = ROOT / "installers" / "Install-Alfred.command"
     windows_installer = ROOT / "installers" / "Install-Alfred.ps1"
     workflow = ROOT / ".github" / "workflows" / "release-installers.yml"
+    docker_workflow = ROOT / ".github" / "workflows" / "docker-publish.yml"
 
     subprocess.run(["bash", "-n", str(mac_installer)], check=True)
     subprocess.run(["bash", "-n", str(ROOT / "Start-Alfred.command")], check=True)
@@ -232,4 +233,8 @@ def test_beginner_installers_and_launchers_are_release_ready():
     assert "Alfred-Windows-Installer.zip" in workflow.read_text(encoding="utf-8")
     assert "gh release create" in workflow.read_text(encoding="utf-8")
     assert "tags:" in workflow.read_text(encoding="utf-8")
+    assert "github.repository == 'OriginMediaIE/Alfred'" in workflow.read_text(encoding="utf-8")
+    assert docker_workflow.read_text(encoding="utf-8").count(
+        "github.repository == 'OriginMediaIE/Alfred'"
+    ) == 2
     assert (ROOT / "Start-Alfred.ps1").is_file()

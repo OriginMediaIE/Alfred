@@ -1,4 +1,4 @@
-# Contributing to Odysseus
+# Contributing to Alfred
 
 Thanks for helping. The project is moving quickly, so the best contributions are focused, easy to review, and easy to test.
 
@@ -25,8 +25,8 @@ End-users cloning the repo will land on `dev` by default. To run the curated/sta
 Docker is the recommended path for normal testing:
 
 ```bash
-git clone https://github.com/pewdiepie-archdaemon/odysseus.git
-cd odysseus
+git clone https://github.com/OriginMediaIE/Alfred.git
+cd Alfred
 cp .env.example .env
 docker compose up -d --build
 ```
@@ -130,4 +130,3 @@ Issues with only "help", "does not work", or a screenshot without context may be
 Do not post secrets, API keys, private logs, personal documents, or public IPs in issues or pull requests.
 
 For security reports, follow [SECURITY.md](SECURITY.md).
-
