@@ -1778,8 +1778,17 @@ def setup_cookbook_routes() -> APIRouter:
 
         # If the serve command opts models into OpenAI tool-calling, record it so
         # agent_loop trusts emitted tool_calls instead of the name heuristic.
+        # Ollama serves are certified by default: the OWNER launched this
+        # daemon through Cookbook (an admin action against their own host),
+        # and Ollama's OpenAI-compat /v1 supports native tool calls — leaving
+        # the flag NULL made every Cookbook-served Ollama model chat-only
+        # until the user found the Settings toggle. The endpoint toggle still
+        # allows flipping it off for models that misbehave with schemas.
         is_ollama_endpoint = "ollama" in (req.cmd or "").lower()
-        supports_tools = True if "--enable-auto-tool-choice" in req.cmd else None
+        if "--enable-auto-tool-choice" in req.cmd or is_ollama_endpoint:
+            supports_tools = True
+        else:
+            supports_tools = None
         # Pin the model the user launched for every Cookbook-created LLM
         # endpoint, not just Ollama. Some OpenAI-compatible servers report a
         # deployment alias from /v1/models, and a stale server can answer on the

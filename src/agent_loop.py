@@ -3126,6 +3126,23 @@ async def stream_agent_loop(
                     _ep = _db.query(_ME).filter(_ME.base_url == _key).first()
                     if _ep is not None:
                         break
+                if _ep is None:
+                    # Host-level fallback: the same daemon is frequently
+                    # reachable under two API path shapes (Ollama native
+                    # `/api` vs OpenAI-compat `/v1/chat/completions`), and
+                    # sessions store whichever shape they were created with.
+                    # An exact base_url miss must not silently strip the
+                    # endpoint's tool certification, so match on
+                    # scheme+host:port before giving up.
+                    from urllib.parse import urlparse as _urlparse
+                    _target = _urlparse((endpoint_url or "").strip())
+                    if _target.netloc:
+                        for _cand in _db.query(_ME).all():
+                            _cand_url = _urlparse((_cand.base_url or "").strip())
+                            if (_cand_url.netloc == _target.netloc
+                                    and _cand_url.scheme == _target.scheme):
+                                _ep = _cand
+                                break
                 if _ep is not None:
                     _endpoint_supports = _ep.supports_tools
             finally:
@@ -3171,6 +3188,17 @@ async def stream_agent_loop(
     # structured calls in Settings. Unknown/false endpoints remain chat-only.
     _is_api_model = _endpoint_supports is True
     _capability_chat_only = not _is_api_model
+    if _capability_chat_only and _model_supports_tools and not _model_no_tools:
+        # The model would likely handle tools, but the endpoint is not
+        # certified (supports_tools unset/false and no row matched even by
+        # host). Log loudly — from the user's side this otherwise looks like
+        # the model refusing, when it was never offered a single tool.
+        logger.warning(
+            "[agent-capability] endpoint %r uncertified for tool calling; "
+            "ALL tools withheld from model %r. Certify it in Settings -> "
+            "Endpoints (supports_tools) if this is your own server.",
+            endpoint_url, model,
+        )
     if _capability_chat_only:
         disabled_tools.update(known_tool_names())
         _relevant_tools = set()
