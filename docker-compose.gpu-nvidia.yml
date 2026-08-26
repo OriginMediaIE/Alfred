@@ -1,7 +1,7 @@
 # Generated from docker-compose.yml plus docker/gpu.nvidia.yml.
 services:
   odysseus:
-    image: ${OM_AUTOMATE_IMAGE:-ghcr.io/originmediaie/alfred:1.0.2}
+    image: ${OM_AUTOMATE_IMAGE:-ghcr.io/originmediaie/alfred:1.0.3}
     build: .
     labels:
       org.opencontainers.image.title: OM Automate
@@ -90,16 +90,19 @@ services:
     ports:
     - ${CHROMADB_BIND:-127.0.0.1}:8100:8000
     volumes:
-    - chromadb-data:/chroma/chroma
+    - chromadb-data:/data
     environment:
     - ANONYMIZED_TELEMETRY=FALSE
     healthcheck:
       test:
       - CMD
-      - python
+      - /usr/bin/bash
       - -c
-      - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v2/heartbeat',
-        timeout=5).read(1)
+      - >-
+        exec 3<>/dev/tcp/127.0.0.1/8000;
+        printf 'GET /api/v2/heartbeat HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3;
+        IFS=' ' read -r _ status _ <&3;
+        test "$$status" = 200
       interval: 10s
       timeout: 6s
       retries: 18

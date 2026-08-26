@@ -2,7 +2,7 @@ services:
   odysseus:
     # The published multi-architecture image is the beginner/default path.
     # Developers can still build this service locally with `docker compose build`.
-    image: ${OM_AUTOMATE_IMAGE:-ghcr.io/originmediaie/alfred:1.0.2}
+    image: ${OM_AUTOMATE_IMAGE:-ghcr.io/originmediaie/alfred:1.0.3}
     build: .
     labels:
       org.opencontainers.image.title: "OM Automate"
@@ -94,11 +94,22 @@ services:
     ports:
       - "${CHROMADB_BIND:-127.0.0.1}:8100:8000"
     volumes:
-      - chromadb-data:/chroma/chroma
+      # Chroma 1.5.9's published config persists under /data.
+      - chromadb-data:/data
     environment:
       - ANONYMIZED_TELEMETRY=FALSE
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v2/heartbeat', timeout=5).read(1)"]
+      # The 1.5.9 image is a Rust binary and does not contain Python or curl.
+      # Bash is present, so perform a dependency-free HTTP heartbeat probe.
+      test:
+        - CMD
+        - /usr/bin/bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/8000;
+          printf 'GET /api/v2/heartbeat HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3;
+          IFS=' ' read -r _ status _ <&3;
+          test "$$status" = 200
       interval: 10s
       timeout: 6s
       retries: 18

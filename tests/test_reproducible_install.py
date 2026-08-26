@@ -188,10 +188,28 @@ def test_runtime_and_service_images_are_exactly_versioned():
     assert "requirements-om.lock" in dockerfile
     assert "chromadb/chroma:1.5.9" in compose
     assert "binwiederhier/ntfy:v2.26.0" in compose
-    assert "ghcr.io/originmediaie/alfred:1.0.2" in compose
+    assert "ghcr.io/originmediaie/alfred:1.0.3" in compose
     assert ":latest" not in compose
     active = [line for line in lock.splitlines() if line and not line.startswith("#")]
     assert active and all("==" in line for line in active)
+
+
+def test_chromadb_compose_contract_matches_the_pinned_image():
+    """Chroma 1.5.9 has Bash, stores data in /data, and has no Python/curl."""
+    for name in (
+        "docker-compose.yml",
+        "docker-compose.gpu-nvidia.yml",
+        "docker-compose.gpu-amd.yml",
+    ):
+        compose = (ROOT / name).read_text(encoding="utf-8")
+        chroma = compose.split("\n  chromadb:\n", 1)[1].split("\n  searxng:\n", 1)[0]
+
+        assert "chromadb-data:/data" in chroma
+        assert "chromadb-data:/chroma/chroma" not in chroma
+        assert "/usr/bin/bash" in chroma
+        assert "/api/v2/heartbeat" in chroma
+        assert "test \"$$status\" = 200" in chroma
+        assert not re.search(r"(?m)^\s*-\s+(?:python|curl)\s*$", chroma)
 
 
 def test_installers_expose_preflight_and_health_contracts():
